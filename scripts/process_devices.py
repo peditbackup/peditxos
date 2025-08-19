@@ -9,7 +9,7 @@ import subprocess
 # This is the most robust starting point: the main releases directory page.
 RELEASES_PAGE_URL = "https://downloads.openwrt.org/releases/"
 # We will support these major versions. The script will find the latest point release for each.
-SUPPORTED_MAJOR_VERSIONS = ["23.05", "22.03", "21.02"]
+SUPPORTED_MAJOR_VERSIONS = ["24.10", "23.05", "22.03", "21.02"]
 OUTPUT_FILE = "devices.json"
 
 class LinkFinder(HTMLParser):
@@ -67,8 +67,8 @@ def get_subdirectories(url):
         response.raise_for_status()
         parser = LinkFinder()
         parser.feed(response.text)
-        # Exclude 'Parent Directory' link
-        return [link for link in parser.links if not link.startswith('?')]
+        # Exclude 'Parent Directory' and other irrelevant links
+        return [link for link in parser.links if not link.startswith('?') and link != '/']
     except requests.exceptions.RequestException:
         return []
 
@@ -109,14 +109,15 @@ def fetch_all_devices_from_structure(latest_releases):
                     continue
                 
                 arch = profiles_data.get('arch_packages')
-                profiles = profiles_data.get('profiles', [])
+                profiles = profiles_data.get('profiles', {}) # Expect a dictionary
                 
-                if not all([arch, profiles]):
+                if not all([arch, profiles]) or not isinstance(profiles, dict):
                     continue
 
-                for device in profiles:
-                    title = device.get('title')
-                    profile_id = device.get('profile')
+                # --- CORRECTED LOGIC ---
+                # Iterate over the key-value pairs of the profiles dictionary
+                for profile_id, device_details in profiles.items():
+                    title = device_details.get('title')
                     
                     if not all([title, profile_id]):
                         continue
@@ -124,7 +125,7 @@ def fetch_all_devices_from_structure(latest_releases):
                     all_processed_devices.append({
                         "title": title,
                         "target": target_path,
-                        "profile": profile_id,
+                        "profile": profile_id, # The key is the profile ID
                         "version": version,
                         "arch": arch
                     })
