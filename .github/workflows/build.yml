@@ -63,18 +63,32 @@ jobs:
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
         run: |
-          TARGET_NAME=$(echo "${{ github.event.inputs.device_target }}" | tr '/' '-')
-          IMAGEBUILDER_FILENAME="openwrt-imagebuilder-${{ github.event.inputs.openwrt_version }}-${TARGET_NAME}.Linux-x86_64.tar.xz"
-          IMAGEBUILDER_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}/${IMAGEBUILDER_FILENAME}"
+          # --- FINAL ROBUST DISCOVERY METHOD ---
+          # Construct the directory URL where the ImageBuilder is located
+          TARGET_DIR_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}"
           
-          # --- DEBUGGING: Echo the full URL before downloading ---
+          echo "Searching for ImageBuilder in: ${TARGET_DIR_URL}/"
+          
+          # Scrape the directory listing to find the actual ImageBuilder filename.
+          # This is more flexible and doesn't assume 'Linux-x86_64'.
+          IMAGEBUILDER_FILENAME=$(curl -s "${TARGET_DIR_URL}/" | grep -o 'href="[^"]*imagebuilder[^"]*\.tar\.xz"' | head -n 1 | sed 's/href="//;s/"//')
+          
+          if [ -z "$IMAGEBUILDER_FILENAME" ]; then
+            echo "::error::Could not automatically find the ImageBuilder filename in the directory."
+            echo "Please check the target URL: ${TARGET_DIR_URL}/"
+            exit 1
+          fi
+          
+          IMAGEBUILDER_URL="${TARGET_DIR_URL}/${IMAGEBUILDER_FILENAME}"
+          
+          echo "Found ImageBuilder: ${IMAGEBUILDER_FILENAME}"
           echo "Attempting to download from URL: ${IMAGEBUILDER_URL}"
           
-          # Removed -q for verbose output from wget
           wget "${IMAGEBUILDER_URL}"
           
           mkdir imagebuilder
           tar -xf "${IMAGEBUILDER_FILENAME}" --strip-components=1 -C imagebuilder
+          # --- END OF FINAL METHOD ---
 
       - name: 'Prepare ImageBuilder Environment'
         run: |
