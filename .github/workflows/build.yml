@@ -39,13 +39,11 @@ jobs:
 
       - name: 'Install Build Dependencies'
         run: |
-          # Added jq for reliable architecture detection
           sudo apt-get update
           sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq
 
-      - name: 'Download OpenWrt ImageBuilder'
+      - name: 'Download and Extract OpenWrt ImageBuilder'
         run: |
-          # Construct the filename and URL
           TARGET_NAME=$(echo "${{ github.event.inputs.device_target }}" | tr '/' '-')
           IMAGEBUILDER_FILENAME="openwrt-imagebuilder-${{ github.event.inputs.openwrt_version }}-${TARGET_NAME}.Linux-x86_64.tar.xz"
           IMAGEBUILDER_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}/${IMAGEBUILDER_FILENAME}"
@@ -53,26 +51,24 @@ jobs:
           echo "Downloading from: ${IMAGEBUILDER_URL}"
           wget -q "${IMAGEBUILDER_URL}"
           tar -xf "${IMAGEBUILDER_FILENAME}"
+          
+          echo "--- Contents after extraction ---"
+          ls -l
 
       - name: 'Prepare ImageBuilder Environment'
         run: |
-          # --- NEW: Construct the ImageBuilder directory path directly for reliability ---
-          TARGET_NAME=$(echo "${{ github.event.inputs.device_target }}" | tr '/' '-')
-          IMAGEBUILDER_DIR="openwrt-imagebuilder-${{ github.event.inputs.openwrt_version }}-${TARGET_NAME}.Linux-x86_64"
-          
-          # Check if the directory exists before proceeding
-          if [ ! -d "$IMAGEBUILDER_DIR" ]; then
-            echo "::error::ImageBuilder directory not found at expected path: ${IMAGEBUILDER_DIR}"
+          # --- MORE ROBUST: Find the ImageBuilder directory reliably ---
+          IMAGEBUILDER_DIR=$(find . -maxdepth 1 -type d -name "openwrt-imagebuilder-*")
+          if [ -z "$IMAGEBUILDER_DIR" ]; then
+            echo "::error::Could not find ImageBuilder directory after extraction."
             exit 1
           fi
-          
           echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> $GITHUB_ENV
-          # --- END OF NEW PATH CONSTRUCTION ---
+          # --- END OF ROBUST FIND ---
 
           # More reliable architecture detection using jq
           TARGET_ARCH=$(jq -r '.arch_packages' "${IMAGEBUILDER_DIR}/.profiles.json")
           
-          # Add a check to ensure the architecture was found
           if [ -z "$TARGET_ARCH" ]; then
             echo "::error::Could not determine target architecture from .profiles.json. Aborting."
             exit 1
@@ -102,7 +98,6 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Function to download latest release IPK from a GitHub repo
           download_latest_ipk() {
             local REPO_NAME="$1"
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
@@ -115,7 +110,6 @@ jobs:
             fi
           }
 
-          # Download architecture-specific themeswitch
           THEMESWITCH_VERSION=$(curl -s https://api.github.com/repos/peditx/luci-app-themeswitch/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
           if [ -n "$THEMESWITCH_VERSION" ]; then
             THEMESWITCH_URL="https://github.com/peditx/luci-app-themeswitch/releases/download/${THEMESWITCH_VERSION}/luci-app-themeswitch_${THEMESWITCH_VERSION}_${{ env.TARGET_ARCH }}.ipk"
@@ -135,11 +129,8 @@ jobs:
         run: |
           cd "${{ env.IMAGEBUILDER_DIR }}"
           
-          # Define base packages that are always included
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
           
-          # Combine all packages for the final build
-          # Both themes are now installed by default
           ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch ${{ github.event.inputs.extra_packages }}"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
