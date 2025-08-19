@@ -58,19 +58,19 @@ jobs:
 
       - name: 'Install Build Dependencies'
         run: |
+          # Added zstd to handle .tar.zst files
           sudo apt-get update
-          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
         run: |
-          # --- FINAL ROBUST DISCOVERY METHOD (v2) ---
-          # Construct the directory URL where the ImageBuilder is located
+          # --- FINAL ROBUST DISCOVERY METHOD (v4) ---
           TARGET_DIR_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}"
           
           echo "Searching for ImageBuilder in: ${TARGET_DIR_URL}/"
           
-          # This new command is more robust: it finds all links, then filters them.
-          IMAGEBUILDER_FILENAME=$(curl -s "${TARGET_DIR_URL}/" | grep -o 'href="[^"]*"' | grep 'imagebuilder' | grep '\.tar\.xz' | head -n 1 | sed 's/href="//;s/"//')
+          # This command now robustly finds both .tar.xz and .tar.zst extensions
+          IMAGEBUILDER_FILENAME=$(curl -s "${TARGET_DIR_URL}/" | grep -o 'href="[^"]*imagebuilder[^"]*\.tar\.\(xz\|zst\)"' | head -n 1 | sed 's/href="//;s/"//')
           
           if [ -z "$IMAGEBUILDER_FILENAME" ]; then
             echo "::error::Could not automatically find the ImageBuilder filename in the directory."
@@ -86,6 +86,7 @@ jobs:
           wget "${IMAGEBUILDER_URL}"
           
           mkdir imagebuilder
+          # Use tar with auto-decompress which handles both xz and zst
           tar -xf "${IMAGEBUILDER_FILENAME}" --strip-components=1 -C imagebuilder
           # --- END OF FINAL METHOD ---
 
