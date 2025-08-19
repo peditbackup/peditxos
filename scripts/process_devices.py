@@ -76,7 +76,7 @@ def get_subdirectories(url):
 def fetch_and_decompress_profiles(url_base):
     """
     Tries to fetch profiles.json, then profiles.json.gz, then profiles.json.xz
-    and returns the parsed JSON data.
+    and returns the parsed JSON data. This is the robust method suggested by the user.
     """
     # Define the order of attempts: plain, gzip, xz
     attempts = [
@@ -140,19 +140,30 @@ def fetch_all_devices_from_structure(latest_releases):
                 if not all([arch, profiles]):
                     continue
 
+                # --- FINAL ROBUST PARSING LOGIC (v2) ---
+                # This handles the actual structure of the profiles data.
                 if isinstance(profiles, dict):
-                    # New format (e.g., 23.05): profiles is a dictionary
+                    # New format (e.g., 23.05): profiles is a dictionary of dictionaries
                     for profile_id, device_details in profiles.items():
-                        title = device_details.get('title')
-                        if title:
-                            all_processed_devices.append({
-                                "title": title, "target": target_path, "profile": profile_id,
-                                "version": version, "arch": arch
-                            })
-                            version_device_count += 1
+                        if isinstance(device_details, dict):
+                            # The title is inside a 'titles' list of objects
+                            titles_list = device_details.get('titles', [])
+                            if titles_list:
+                                title_info = titles_list[0]
+                                vendor = title_info.get('vendor', 'Generic')
+                                model = title_info.get('model', profile_id)
+                                # Construct a clean, full title
+                                full_title = f"{vendor} {model}".strip()
+                                
+                                all_processed_devices.append({
+                                    "title": full_title, "target": target_path, "profile": profile_id,
+                                    "version": version, "arch": arch
+                                })
+                                version_device_count += 1
                 elif isinstance(profiles, list):
                     # Old format (e.g., 21.02): profiles is a list of strings
                     for profile_string in profiles:
+                        # Simple heuristic to create a title from the profile string
                         title = profile_string.replace('_', ' ').replace('-', ' ').title()
                         all_processed_devices.append({
                             "title": title, "target": target_path, "profile": profile_string,
