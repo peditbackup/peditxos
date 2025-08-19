@@ -1,7 +1,7 @@
 # scripts/process_devices.py
 import requests
 import json
-import os
+import sys # Import sys to exit with an error code
 
 # The official URL for the OpenWrt firmware selector API data
 API_URL = "https://sysupgrade.openwrt.org/api/v1/devices"
@@ -12,57 +12,61 @@ def fetch_and_process_devices():
     Fetches the complete list of devices from the OpenWrt API,
     processes it into a simplified format, and saves it to a JSON file.
     """
-    print("Fetching device list from OpenWrt API...")
+    print(f"--> Fetching device list from {API_URL}...")
     try:
         response = requests.get(API_URL, timeout=60)
-        response.raise_for_status()  # Raise an exception for bad status codes
+        response.raise_for_status()  # Raise an exception for bad status codes (like 404 or 500)
         data = response.json()
+        print("--> Successfully fetched data from API.")
     except requests.exceptions.RequestException as e:
-        print(f"Error: Could not fetch data from API. {e}")
-        return
+        print(f"!!! ERROR: Could not fetch data from API. {e}")
+        sys.exit(1) # Exit with an error code to fail the workflow
 
-    print("Processing device data...")
+    print("--> Processing device data...")
     processed_devices = []
     
-    # The API returns a dictionary where keys are device IDs and values are device details
-    for device_id, details in data.get('devices', {}).items():
-        # We only care about devices that have at least one release image
+    devices_data = data.get('devices', {})
+    if not devices_data:
+        print("!!! WARNING: The 'devices' key was not found or is empty in the API response.")
+        sys.exit(1)
+
+    for device_id, details in devices_data.items():
         if not details.get('images'):
             continue
 
-        # Find the latest stable release for this device
         latest_release = details.get('supported_releases', {}).get('stable')
         if not latest_release:
             continue
 
-        # Extract architecture from the first image link (it's consistent)
-        first_image_url = details['images'][0].get('name', '')
-        # Example url part: openwrt-23.05.3-ath79-generic-tplink_archer-c7-v5-squashfs-sysupgrade.bin
-        # We need the architecture part, which is in the target.
-        # The API provides the target directly.
-        target_info = details.get('target', '') # e.g., "ath79/generic"
-        arch = target_info.split('/')[0] if '/' in target_info else target_info
+        target_info = details.get('target', '')
+        # The API provides the architecture directly now, which is more reliable.
+        arch = details.get('arch_packages')
+
+        if not target_info or not arch:
+            continue # Skip devices with incomplete data
 
         processed_devices.append({
             "title": details.get('title', 'Unknown Device'),
             "target": target_info,
             "profile": device_id,
             "version": latest_release,
-            "arch": arch # We save the architecture directly
+            "arch": arch
         })
 
-    # Sort the list alphabetically by title for a better user experience
+    if not processed_devices:
+        print("!!! ERROR: No devices were processed. The API might have changed or returned no valid data.")
+        sys.exit(1)
+
     processed_devices.sort(key=lambda x: x['title'])
+    print(f"--> Successfully processed {len(processed_devices)} devices.")
 
-    print(f"Successfully processed {len(processed_devices)} devices.")
-
-    # Save the processed list to the output file
     try:
         with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
             json.dump(processed_devices, f, ensure_ascii=False, indent=2)
-        print(f"Device list saved to {OUTPUT_FILE}")
+        print(f"--> Device list saved successfully to {OUTPUT_FILE}")
     except IOError as e:
-        print(f"Error: Could not write to file {OUTPUT_FILE}. {e}")
+        print(f"!!! ERROR: Could not write to file {OUTPUT_FILE}. {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     fetch_and_process_devices()
