@@ -4,7 +4,6 @@ import json
 import sys
 import re
 from html.parser import HTMLParser
-import subprocess
 
 # This is the most robust starting point: the main releases directory page.
 RELEASES_PAGE_URL = "https://downloads.openwrt.org/releases/"
@@ -109,27 +108,33 @@ def fetch_all_devices_from_structure(latest_releases):
                     continue
                 
                 arch = profiles_data.get('arch_packages')
-                profiles = profiles_data.get('profiles', {}) # Expect a dictionary
+                profiles = profiles_data.get('profiles') # Get profiles, can be dict or list
                 
-                if not all([arch, profiles]) or not isinstance(profiles, dict):
+                if not all([arch, profiles]):
                     continue
 
-                # --- CORRECTED LOGIC ---
-                # Iterate over the key-value pairs of the profiles dictionary
-                for profile_id, device_details in profiles.items():
-                    title = device_details.get('title')
-                    
-                    if not all([title, profile_id]):
-                        continue
-
-                    all_processed_devices.append({
-                        "title": title,
-                        "target": target_path,
-                        "profile": profile_id, # The key is the profile ID
-                        "version": version,
-                        "arch": arch
-                    })
-                    version_device_count += 1
+                # --- FINAL CORRECTED LOGIC ---
+                # Handle both new (dict) and old (list) profiles format
+                if isinstance(profiles, dict):
+                    # New format (e.g., 23.05): profiles is a dictionary
+                    for profile_id, device_details in profiles.items():
+                        title = device_details.get('title')
+                        if title:
+                            all_processed_devices.append({
+                                "title": title, "target": target_path, "profile": profile_id,
+                                "version": version, "arch": arch
+                            })
+                            version_device_count += 1
+                elif isinstance(profiles, list):
+                    # Old format (e.g., 21.02): profiles is a list of strings
+                    for profile_string in profiles:
+                        # Simple heuristic to create a title from the profile string
+                        title = profile_string.replace('_', ' ').replace('-', ' ').title()
+                        all_processed_devices.append({
+                            "title": title, "target": target_path, "profile": profile_string,
+                            "version": version, "arch": arch
+                        })
+                        version_device_count += 1
         
         print(f"--> Processed {version_device_count} devices for version {version}.")
 
