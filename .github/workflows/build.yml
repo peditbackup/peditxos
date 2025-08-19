@@ -56,11 +56,20 @@ jobs:
 
       - name: 'Prepare ImageBuilder Environment'
         run: |
-          # Find the extracted ImageBuilder directory and save its path
-          IMAGEBUILDER_DIR=$(find . -maxdepth 1 -type d -name "openwrt-imagebuilder-*")
+          # --- NEW: Construct the ImageBuilder directory path directly for reliability ---
+          TARGET_NAME=$(echo "${{ github.event.inputs.device_target }}" | tr '/' '-')
+          IMAGEBUILDER_DIR="openwrt-imagebuilder-${{ github.event.inputs.openwrt_version }}-${TARGET_NAME}.Linux-x86_64"
+          
+          # Check if the directory exists before proceeding
+          if [ ! -d "$IMAGEBUILDER_DIR" ]; then
+            echo "::error::ImageBuilder directory not found at expected path: ${IMAGEBUILDER_DIR}"
+            exit 1
+          fi
+          
           echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> $GITHUB_ENV
+          # --- END OF NEW PATH CONSTRUCTION ---
 
-          # --- NEW: More reliable architecture detection using jq ---
+          # More reliable architecture detection using jq
           TARGET_ARCH=$(jq -r '.arch_packages' "${IMAGEBUILDER_DIR}/.profiles.json")
           
           # Add a check to ensure the architecture was found
@@ -71,7 +80,6 @@ jobs:
 
           echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
           echo "Detected architecture reliably: ${TARGET_ARCH}"
-          # --- END OF NEW DETECTION ---
 
           # Add custom repository key
           KEY_DIR="${IMAGEBUILDER_DIR}/etc/opkg/keys"
