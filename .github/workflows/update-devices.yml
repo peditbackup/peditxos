@@ -15,6 +15,12 @@ jobs:
     name: 'Fetch and Commit Device List'
     runs-on: ubuntu-latest
 
+    # --- THIS IS THE FIX ---
+    # Grant permissions to the GITHUB_TOKEN for this job
+    permissions:
+      contents: write
+    # ----------------------
+
     steps:
       - name: 'Checkout Repository'
         uses: actions/checkout@v4
