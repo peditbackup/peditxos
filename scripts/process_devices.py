@@ -2,56 +2,66 @@
 import requests
 import json
 import sys
+import subprocess
 
-# This URL is stable and provides the list of available releases.
-RELEASES_INFO_URL = "https://firmware-selector.openwrt.org/data/releases.json"
+# This is the most robust starting point: the main releases directory.
+RELEASES_PAGE_URL = "https://downloads.openwrt.org/releases/"
 OUTPUT_FILE = "devices.json"
 
-def fetch_all_stable_devices():
+def get_stable_release_versions():
     """
-    Fetches data for ALL stable releases by discovering their data files dynamically,
-    combines them, and saves the result to a single JSON file.
-    This is the most robust method as it mimics the official firmware selector.
+    Uses the user-provided shell command pipeline to scrape the releases page
+    and get a list of all available version strings. This is the most robust method.
     """
-    print(f"--> Fetching release information from {RELEASES_INFO_URL}...")
+    print(f"--> Scraping release versions from {RELEASES_PAGE_URL}...")
+    
+    # The brilliant command provided by the user
+    command = """
+    curl -s https://downloads.openwrt.org/releases/ | \
+    grep -oP '(?<=href=")[0-9]+\.[0-9]+\.[0-9]+/' | \
+    sed 's:/$::' | \
+    jq -R . | \
+    jq -s .
+    """
+    
     try:
-        response = requests.get(RELEASES_INFO_URL, timeout=30)
-        response.raise_for_status()
-        releases = response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"!!! ERROR: Could not fetch release info. {e}")
-        sys.exit(1)
+        # Execute the command in a shell
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
+        versions = json.loads(result.stdout)
+        
+        # Filter for the major versions we want to support
+        supported_versions = [
+            v for v in versions 
+            if any(v.startswith(major) for major in ["21.", "22.", "23.", "24."])
+        ]
+        
+        print(f"--> Found {len(supported_versions)} relevant stable release(s).")
+        return sorted(supported_versions, reverse=True)
+        
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+        print(f"!!! ERROR: Failed to scrape release versions. {e}")
+        return []
 
+def fetch_all_devices_from_structure(versions_to_process):
+    """
+    Iterates through the discovered stable releases and their targets to build
+    a comprehensive device list.
+    """
     all_processed_devices = []
     
-    # Filter for all stable releases from version 21 onwards
-    stable_releases_to_process = [
-        r for r in releases 
-        if r.get('stable') and any(r.get('version', '').startswith(v) for v in ['21.', '22.', '23.', '24.'])
-    ]
-
-    if not stable_releases_to_process:
-        print("!!! ERROR: No stable releases found to process (v21-v24).")
-        sys.exit(1)
-
-    print(f"--> Found {len(stable_releases_to_process)} stable release(s) to process.")
-
-    for release in stable_releases_to_process:
-        version = release.get('version')
-        # This is the key: construct the URL to the targets.json for each version
+    for version in versions_to_process:
         targets_url = f"https://downloads.openwrt.org/releases/{version}/targets/targets.json"
         
         print(f"\n--- Processing version: {version} from {targets_url} ---")
         
         try:
-            print(f"--> Fetching targets data for version {version}...")
-            response = requests.get(targets_url, timeout=120)
+            print(f"--> Fetching targets list for version {version}...")
+            response = requests.get(targets_url, timeout=60)
             response.raise_for_status()
             targets_data = response.json()
-            print(f"--> Successfully fetched targets data for {version}.")
         except requests.exceptions.RequestException as e:
-            print(f"!!! WARNING: Could not fetch targets data for version {version}. Skipping. Error: {e}")
-            continue # Skip to the next version if one fails
+            print(f"!!! WARNING: Could not fetch targets for version {version}. Skipping. Error: {e}")
+            continue
 
         if not isinstance(targets_data, list):
             print(f"!!! WARNING: Expected a list of targets for version {version}. Skipping.")
@@ -91,7 +101,7 @@ def fetch_all_stable_devices():
     # Sort the final combined list by title, then by version descending
     all_processed_devices.sort(key=lambda x: (x['title'], x['version']), reverse=True)
     
-    print(f"\n>>> Successfully processed a total of {len(all_processed_devices)} device entries across all versions.")
+    print(f"\n>>> Successfully processed a total of {len(all_processed_devices)} device entries.")
 
     try:
         with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
@@ -102,4 +112,9 @@ def fetch_all_stable_devices():
         sys.exit(1)
 
 if __name__ == "__main__":
-    fetch_all_stable_devices()
+    stable_versions = get_stable_release_versions()
+    if stable_versions:
+        fetch_all_devices_from_structure(stable_versions)
+    else:
+        print("!!! FATAL: Could not proceed without a list of stable versions.")
+        sys.exit(1)
