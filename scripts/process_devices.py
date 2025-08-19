@@ -45,7 +45,7 @@ def get_stable_release_versions():
 def fetch_all_devices_from_structure(versions_to_process):
     """
     Iterates through the discovered stable releases and their targets to build
-    a comprehensive device list.
+    a comprehensive device list by fetching profiles.json for each target.
     """
     all_processed_devices = []
     
@@ -71,11 +71,27 @@ def fetch_all_devices_from_structure(versions_to_process):
         for target_info in targets_data:
             target_path = target_info.get('path')
             arch = target_info.get('arch_packages')
-            profiles = target_info.get('profiles', [])
-
-            if not all([target_path, arch, profiles]):
+            
+            if not all([target_path, arch]):
                 continue
 
+            # CORRECT LOGIC: Fetch the profiles.json for this specific target
+            profiles_url = f"https://downloads.openwrt.org/releases/{version}/targets/{target_path}/profiles.json"
+            
+            try:
+                # Use a session for potentially better performance
+                s = requests.Session()
+                response = s.get(profiles_url, timeout=60)
+                if response.status_code == 404:
+                    # This is expected for some targets (e.g., imagebuilder or sdk targets)
+                    continue 
+                response.raise_for_status()
+                profiles_data = response.json()
+            except requests.exceptions.RequestException:
+                # Also skip if there's an error fetching the profiles for a specific target
+                continue
+                
+            profiles = profiles_data.get('profiles', [])
             for device in profiles:
                 title = device.get('title')
                 profile_id = device.get('profile')
