@@ -30,6 +30,16 @@ jobs:
       - name: 'Run Device Processing Script'
         run: python scripts/process_devices.py
 
+      - name: 'Verify File Creation'
+        run: |
+          echo "--- Checking for devices.json ---"
+          ls -l
+          if [ ! -f devices.json ]; then
+            echo "::error::devices.json was not created by the script."
+            exit 1
+          fi
+          echo "--- devices.json found! ---"
+
       - name: 'Commit and Push updated devices.json'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
