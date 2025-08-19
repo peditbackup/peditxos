@@ -162,10 +162,15 @@ jobs:
           cd "${{ env.IMAGEBUILDER_DIR }}"
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
           ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch ${{ github.event.inputs.extra_packages }}"
+          
+          echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
+          echo "Final Packages: ${ALL_PACKAGES}"
+
+          # --- DEBUGGING: Added V=s for verbose output ---
           make image PROFILE="${{ github.event.inputs.device_profile }}" \
             PACKAGES="${ALL_PACKAGES}" \
             FILES="${{ github.workspace }}/files" \
-            BIN_DIR="${{ github.workspace }}/output"
+            BIN_DIR="${{ github.workspace }}/output" V=s
 
       - name: 'Organize and Rename Output Files'
         run: |
