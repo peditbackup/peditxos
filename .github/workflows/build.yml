@@ -39,8 +39,9 @@ jobs:
 
       - name: 'Install Build Dependencies'
         run: |
+          # Added jq for reliable architecture detection
           sudo apt-get update
-          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq
 
       - name: 'Download OpenWrt ImageBuilder'
         run: |
@@ -59,16 +60,24 @@ jobs:
           IMAGEBUILDER_DIR=$(find . -maxdepth 1 -type d -name "openwrt-imagebuilder-*")
           echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> $GITHUB_ENV
 
+          # --- NEW: More reliable architecture detection using jq ---
+          TARGET_ARCH=$(jq -r '.arch_packages' "${IMAGEBUILDER_DIR}/.profiles.json")
+          
+          # Add a check to ensure the architecture was found
+          if [ -z "$TARGET_ARCH" ]; then
+            echo "::error::Could not determine target architecture from .profiles.json. Aborting."
+            exit 1
+          fi
+
+          echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
+          echo "Detected architecture reliably: ${TARGET_ARCH}"
+          # --- END OF NEW DETECTION ---
+
           # Add custom repository key
           KEY_DIR="${IMAGEBUILDER_DIR}/etc/opkg/keys"
           mkdir -p "${KEY_DIR}"
           cp ./custom-keys/passwall.pub "${KEY_DIR}/"
           echo "Custom repository key added."
-
-          # Determine the target architecture from ImageBuilder info
-          TARGET_ARCH=$(opkg --arch-file "${IMAGEBUILDER_DIR}/.targetinfo" print-architecture | awk '{print $2}')
-          echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
-          echo "Detected architecture: ${TARGET_ARCH}"
 
           # Add custom repository feeds dynamically
           REPO_CONF_FILE="${IMAGEBUILDER_DIR}/etc/opkg/customfeeds.conf"
@@ -122,7 +131,8 @@ jobs:
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
           
           # Combine all packages for the final build
-          ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap ${{ github.event.inputs.theme_choice }} luci-app-themeswitch ${{ github.event.inputs.extra_packages }}"
+          # Both themes are now installed by default
+          ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch ${{ github.event.inputs.extra_packages }}"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
