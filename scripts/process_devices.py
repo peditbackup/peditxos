@@ -3,8 +3,8 @@ import requests
 import json
 import sys # Import sys to exit with an error code
 
-# The official URL for the OpenWrt firmware selector API data
-API_URL = "https://sysupgrade.openwrt.org/api/v1/devices"
+# NEW: Updated URL for the OpenWrt device list
+API_URL = "https://sysupgrade.openwrt.org/json/v1/devices.json"
 OUTPUT_FILE = "devices.json"
 
 def fetch_and_process_devices():
@@ -25,6 +25,7 @@ def fetch_and_process_devices():
     print("--> Processing device data...")
     processed_devices = []
     
+    # The new API has a slightly different structure
     devices_data = data.get('devices', {})
     if not devices_data:
         print("!!! WARNING: The 'devices' key was not found or is empty in the API response.")
