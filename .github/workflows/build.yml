@@ -66,7 +66,13 @@ jobs:
           TARGET_NAME=$(echo "${{ github.event.inputs.device_target }}" | tr '/' '-')
           IMAGEBUILDER_FILENAME="openwrt-imagebuilder-${{ github.event.inputs.openwrt_version }}-${TARGET_NAME}.Linux-x86_64.tar.xz"
           IMAGEBUILDER_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}/${IMAGEBUILDER_FILENAME}"
-          wget -q "${IMAGEBUILDER_URL}"
+          
+          # --- DEBUGGING: Echo the full URL before downloading ---
+          echo "Attempting to download from URL: ${IMAGEBUILDER_URL}"
+          
+          # Removed -q for verbose output from wget
+          wget "${IMAGEBUILDER_URL}"
+          
           mkdir imagebuilder
           tar -xf "${IMAGEBUILDER_FILENAME}" --strip-components=1 -C imagebuilder
 
