@@ -50,21 +50,19 @@ jobs:
           
           echo "Downloading from: ${IMAGEBUILDER_URL}"
           wget -q "${IMAGEBUILDER_URL}"
-          tar -xf "${IMAGEBUILDER_FILENAME}"
           
-          echo "--- Contents after extraction ---"
-          ls -l
+          # Create a predictable directory and extract into it
+          mkdir imagebuilder
+          tar -xf "${IMAGEBUILDER_FILENAME}" --strip-components=1 -C imagebuilder
+          
+          echo "--- Contents of imagebuilder directory ---"
+          ls -l imagebuilder
 
       - name: 'Prepare ImageBuilder Environment'
         run: |
-          # --- MORE ROBUST: Find the ImageBuilder directory reliably ---
-          IMAGEBUILDER_DIR=$(find . -maxdepth 1 -type d -name "openwrt-imagebuilder-*")
-          if [ -z "$IMAGEBUILDER_DIR" ]; then
-            echo "::error::Could not find ImageBuilder directory after extraction."
-            exit 1
-          fi
+          # The directory is now predictably named 'imagebuilder'
+          IMAGEBUILDER_DIR="imagebuilder"
           echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> $GITHUB_ENV
-          # --- END OF ROBUST FIND ---
 
           # More reliable architecture detection using jq
           TARGET_ARCH=$(jq -r '.arch_packages' "${IMAGEBUILDER_DIR}/.profiles.json")
