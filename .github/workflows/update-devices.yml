@@ -1,0 +1,40 @@
+# .github/workflows/update-devices.yml
+
+name: 'Update OpenWrt Device List'
+
+on:
+  # Run this workflow automatically every Sunday at 3 AM UTC
+  schedule:
+    - cron: '0 3 * * 0'
+  
+  # Allow running this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  update-device-list:
+    name: 'Fetch and Commit Device List'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+
+      - name: 'Set up Python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: 'Install Python Dependencies'
+        run: pip install requests
+
+      - name: 'Run Device Processing Script'
+        run: python scripts/process_devices.py
+
+      - name: 'Commit and Push updated devices.json'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'Automated: Update OpenWrt device list'
+          file_pattern: 'devices.json'
+          commit_user_name: 'GitHub Actions Bot'
+          commit_user_email: 'actions@github.com'
+          commit_author: 'GitHub Actions Bot <actions@github.com>'
