@@ -1,0 +1,13 @@
+#!/bin/sh
+# This script runs once on the first boot to set initial configurations.
+
+# Set system timezone and hostname
+uci set system.@system[0].zonename='Asia/Tehran'
+uci set system.@system[0].hostname='PeDitXOS'
+uci commit system
+
+# Set custom distribution information
+sed -i 's/DISTRIB_ID=.*/DISTRIB_ID="PeDitXOS"/' /etc/openwrt_release
+sed -i 's/DISTRIB_DESCRIPTION=.*/DISTRIB_DESCRIPTION="PeDitX OS telegram:@peditx"/' /etc/openwrt_release
+
+exit 0

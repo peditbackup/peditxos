@@ -1,0 +1,286 @@
+<%# LuCI - Lua Configuration Interface - PeDitXOS Store v3 %>
+<%+header%>
+<style>
+    :root {
+        --peditx-primary: #00b5e2;
+        --peditx-orange: #ffae42;
+        --peditx-dark-bg: #2d2d2d;
+        --peditx-card-bg: #3a3a3a;
+        --peditx-border: #444;
+        --peditx-text-color: #f0f0f0;
+        --peditx-hover-bg: #454545;
+        --peditx-focus-ring: #008eb2;
+        --peditx-red: #e74c3c;
+        --peditx-red-hover: #c0392b;
+    }
+    body { color: var(--peditx-text-color); }
+    
+    /* This will make the title follow the theme's animation and style */
+    .cbi-map-title {
+        padding-bottom: 15px;
+        border-bottom: 1px solid var(--peditx-border);
+        margin-bottom: 10px;
+    }
+
+    .action-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; margin-top: 20px;}
+    .action-item { background: var(--peditx-card-bg); padding: 20px; border-radius: 12px; display: flex; flex-direction: column; cursor: pointer; border: 1px solid var(--peditx-border); transition: transform 0.2s, box-shadow 0.2s, background 0.2s; }
+    .action-item:hover { transform: translateY(-5px); box-shadow: 0 6px 15px rgba(0,0,0,0.4); background: var(--peditx-hover-bg); }
+    .action-item.selected { border-color: var(--peditx-orange); box-shadow: 0 0 0 3px rgba(255, 140, 0, 0.5), 0 6px 15px rgba(0,0,0,0.4); }
+    
+    .action-item-header { display: flex; align-items: center; margin-bottom: 15px; }
+    .action-item-header img { width: 48px; height: 48px; margin-right: 15px; border-radius: 8px; background-color: #2d2d2d; }
+    .action-item-header h4 { margin: 0; font-size: 1.1em; color: var(--peditx-text-color); }
+    
+    .action-item p { font-size: 0.9em; color: #ccc; flex-grow: 1; margin-bottom: 15px; }
+    
+    .action-item-footer { margin-top: auto; font-size: 0.8em; color: #888; }
+    
+    .execute-bar { margin-top: 25px; text-align: center; display: flex; justify-content: center; align-items: center; gap: 20px; flex-wrap: wrap; }
+
+    @keyframes pulse { 0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 140, 0, 0.7), 0 4px 15px rgba(0,0,0,0.3); } 70% { transform: scale(1.02); box-shadow: 0 0 0 10px rgba(255, 140, 0, 0), 0 6px 25px rgba(0,0,0,0.4); } 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 140, 0, 0), 0 4px 15px rgba(0,0,0,0.3); } }
+
+    .peditx-main-button { font-size: 18px; padding: 16px 45px; color: #1a1a1a; font-weight: bold; border: none; border-radius: 50px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); transition: background 0.3s ease, transform 0.2s ease; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; text-shadow: 0 1px 1px rgba(255,255,255,0.2); }
+    #execute-button { background: linear-gradient(135deg, var(--peditx-orange), #ff8c00); animation: pulse 2.5s infinite; }
+    #execute-button:hover { background: linear-gradient(135deg, #ff8c00, #e87a00); animation-play-state: paused; }
+    #execute-button:disabled { background: #555; cursor: not-allowed; box-shadow: none; transform: none; animation: none; color: #999; }
+    
+    #stop-button { background: linear-gradient(135deg, var(--peditx-red), var(--peditx-red-hover)); }
+    #stop-button:hover { background: linear-gradient(135deg, var(--peditx-red-hover), #a03228); }
+
+    .peditx-secondary-button {
+        background: var(--peditx-primary);
+        color: white;
+        font-size: 16px;
+        padding: 14px 30px;
+        animation: none;
+    }
+    .peditx-secondary-button:hover {
+        background: var(--peditx-focus-ring);
+    }
+    .peditx-secondary-button:disabled {
+        background: #555;
+        cursor: not-allowed;
+    }
+
+    .peditx-log-container { background-color: var(--peditx-dark-bg); color: var(--peditx-text-color); font-family: monospace; padding: 15px; border-radius: 8px; height: 350px; overflow-y: scroll; white-space: pre-wrap; border: 1px solid var(--peditx-border); margin-top: 10px; box-shadow: inset 0 0 5px rgba(0,0,0,0.2); }
+    .peditx-status { padding: 15px; margin-top: 20px; background-color: var(--peditx-card-bg); border-radius: 8px; text-align: center; font-weight: bold; border: 1px solid var(--peditx-border); color: var(--peditx-orange); }
+    .log-controls { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; gap: 10px; }
+    .log-controls .cbi-button { font-size: 12px; padding: 8px 15px; border-radius: 5px; background-color: var(--peditx-card-bg); color: var(--peditx-text-color); border: 1px solid var(--peditx-border); transition: background 0.2s, border-color 0.2s; cursor: pointer; }
+    .log-controls .cbi-button:hover { background-color: var(--peditx-hover-bg); border-color: var(--peditx-orange); }
+    .log-controls label { margin-right: 10px; cursor: pointer; user-select: none; }
+    .log-controls input[type="checkbox"] { vertical-align: middle; margin-right: 5px; }
+</style>
+
+<div class="cbi-map">
+    <div class="cbi-map-title">
+        <h2>PeDitXOS Store</h2>
+    </div>
+    <p>Select a service to install. The list is fetched from an external source.</p>
+    
+    <div id="service-grid" class="action-grid">
+        <p>Loading services...</p>
+    </div>
+
+    <div class="execute-bar">
+        <button id="update-list-btn" class="peditx-main-button peditx-secondary-button">Update List</button>
+        <button id="execute-button" class="peditx-main-button">Install Selected</button>
+        <button id="refresh-luci-btn" class="peditx-main-button peditx-secondary-button" style="background: #2ecc71;">Refresh LuCI</button>
+        <button id="stop-button" class="peditx-main-button" style="display:none;">Stop</button>
+    </div>
+
+    <div id="peditx-status" class="peditx-status">Ready. Select a service and press Install.</div>
+    <div class="log-controls">
+        <div>
+            <label for="auto-refresh-toggle"><input type="checkbox" id="auto-refresh-toggle" checked> Auto Refresh Log</label>
+        </div>
+        <div>
+            <button class="cbi-button" onclick="pollStatus(true)">Refresh Log</button>
+            <button class="cbi-button" onclick="clearLog()">Clear Log</button>
+        </div>
+    </div>
+    <pre id="log-output" class="peditx-log-container">Welcome to the PeDitXOS Store!</pre>
+</div>
+
+<script type="text/javascript">
+    // URLs for API calls
+    var servicesURL = '<%=luci.dispatcher.build_url("admin", "peditxos", "serviceinstaller", "get_services")%>';
+    var statusURL = '<%=luci.dispatcher.build_url("admin", "peditxos", "serviceinstaller", "status")%>';
+    var runURL = '<%=luci.dispatcher.build_url("admin", "peditxos", "serviceinstaller", "run")%>';
+
+    // DOM Elements
+    var serviceGrid = document.getElementById('service-grid');
+    var startButton = document.getElementById('execute-button');
+    var stopButton = document.getElementById('stop-button');
+    var statusDiv = document.getElementById('peditx-status');
+    var logOutput = document.getElementById('log-output');
+    var autoRefreshToggle = document.getElementById('auto-refresh-toggle');
+    var updateBtn = document.getElementById('update-list-btn');
+    var refreshLuciBtn = document.getElementById('refresh-luci-btn');
+
+    // State variables
+    var selectedAction = null;
+    var isPolling = false;
+
+    // --- Core Functions ---
+
+    function pollStatus(force) {
+        if (isPolling && !force) return;
+
+        XHR.poll(2, statusURL, null, function(x, data) {
+            if (!x || x.status !== 200 || !data) {
+                XHR.poll.stop();
+                isPolling = false;
+                return;
+            }
+
+            if (logOutput.textContent !== data.log) {
+                logOutput.textContent = data.log;
+                logOutput.scrollTop = logOutput.scrollHeight;
+            }
+            
+            if (data.running) {
+                if (!isPolling) isPolling = true;
+                startButton.disabled = true;
+                stopButton.style.display = 'inline-flex';
+                updateBtn.disabled = true;
+                refreshLuciBtn.disabled = true;
+            } else {
+                if (isPolling) {
+                    if (!autoRefreshToggle.checked) {
+                        XHR.poll.stop();
+                    }
+                    isPolling = false;
+                }
+                startButton.disabled = false;
+                stopButton.style.display = 'none';
+                updateBtn.disabled = false;
+                refreshLuciBtn.disabled = false;
+            }
+        });
+    }
+    
+    function clearLog() {
+        XHR.get(runURL, { action: 'clear_log' }, function(x, data) {
+            if (x && x.status === 200) {
+                pollStatus(true);
+            }
+        });
+    }
+    
+    function startActionByName(actionName) {
+        XHR.get(runURL, { action: actionName }, function(x, data) {
+            if (x && x.status === 200 && data.success) {
+                statusDiv.innerText = 'Starting ' + actionName + '...';
+                if (!isPolling) {
+                    pollStatus(true);
+                }
+            } else {
+                statusDiv.innerText = 'Error starting action: ' + (data ? data.error : 'Unknown');
+            }
+        });
+    }
+
+    function renderServices(services) {
+        serviceGrid.innerHTML = '';
+        if (!services || !Array.isArray(services) || services.length === 0) {
+            serviceGrid.innerHTML = '<p>No services found or list is empty. Please try the "Update List" button.</p>';
+            return;
+        }
+
+        services.forEach(function(service) {
+            var item = document.createElement('div');
+            item.className = 'action-item';
+            item.setAttribute('data-action', service.id); // *** FIX: Use service.id ***
+            item.innerHTML = `
+                <div class="action-item-header">
+                    <img src="${service.icon_url}" alt="${service.name}" onerror="this.src='https://placehold.co/48x48/3a3a3a/f0f0f0?text=ICON'; this.onerror=null;">
+                    <h4>${service.name}</h4>
+                </div>
+                <p>${service.description}</p>
+                <div class="action-item-footer">
+                    <span>Version: ${service.version || 'N/A'}</span>
+                </div>
+            `;
+            item.addEventListener('click', function() {
+                if (isPolling) return; // Don't allow selection while a process is running
+                document.querySelectorAll('.action-item').forEach(el => el.classList.remove('selected'));
+                this.classList.add('selected');
+                selectedAction = this.getAttribute('data-action');
+                statusDiv.innerText = `Selected: ${service.name}. Press Install to proceed.`;
+            });
+            serviceGrid.appendChild(item);
+        });
+    }
+
+    function fetchServices() {
+        serviceGrid.innerHTML = '<p>Loading services...</p>';
+        XHR.get(servicesURL, null, function(x, data) {
+            if (x && x.status === 200 && data && !data.error) {
+                // *** FIX: Use the data directly as it is an array ***
+                renderServices(data); 
+            } else {
+                serviceGrid.innerHTML = '<p style="color: var(--peditx-red);">Error: ' + (data ? data.error : 'Could not fetch service list.') + '</p>';
+            }
+        });
+    }
+
+    // --- Event Listeners ---
+
+    startButton.addEventListener('click', function() {
+        if (!selectedAction) {
+            alert('Please select a service to install first.');
+            return;
+        }
+        startActionByName(selectedAction);
+    });
+
+    stopButton.addEventListener('click', function() {
+        statusDiv.innerText = 'Stopping process...';
+        XHR.get(runURL, { action: 'stop_process' }, function(x, data) {
+            if (x && x.status === 200 && data.success) {
+                pollStatus(true);
+            } else {
+                statusDiv.innerText = 'Error stopping process.';
+            }
+        });
+    });
+
+    autoRefreshToggle.addEventListener('change', function() {
+		if (this.checked) {
+            statusDiv.innerText = 'Auto-refresh enabled.';
+            if (!isPolling) {
+			    pollStatus(true);
+            }
+		} else {
+            statusDiv.innerText = 'Auto-refresh disabled.';
+            if (isPolling) {
+			    XHR.poll.stop();
+                isPolling = false;
+            }
+		}
+	});
+
+    updateBtn.addEventListener('click', function() {
+        statusDiv.innerText = 'Updating app list from GitHub...';
+        // Call the dedicated action in the runner script
+        startActionByName('update_service_list');
+        // After the list is downloaded, re-fetch and render it
+        setTimeout(fetchServices, 2000); // Wait 2 seconds for download to complete
+    });
+
+    refreshLuciBtn.addEventListener('click', function() {
+        statusDiv.innerText = 'Clearing LuCI cache and reloading...';
+        XHR.get(runURL, { action: 'refresh_luci' }, function(x, data) {
+            if (x && x.status === 200) {
+                setTimeout(function() { window.location.reload(); }, 1000);
+            } else {
+                statusDiv.innerText = 'Error refreshing LuCI.';
+            }
+        });
+    });
+
+    // --- Initial Load ---
+    fetchServices();
+    pollStatus(true);
+</script>
+<%+footer%>

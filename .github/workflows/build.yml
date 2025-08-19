@@ -1,0 +1,166 @@
+# .github/workflows/build.yml
+
+name: 'PeDitXOS Firmware Builder'
+
+# This workflow is triggered manually via the GitHub API
+on:
+  workflow_dispatch:
+    inputs:
+      device_target:
+        description: 'Device Target (e.g., x86/64)'
+        required: true
+        type: string
+      device_profile:
+        description: 'Device Profile (e.g., generic)'
+        required: true
+        type: string
+      openwrt_version:
+        description: 'OpenWrt Version (e.g., 23.05.3)'
+        required: true
+        type: string
+      extra_packages:
+        description: 'A space-separated list of extra packages (e.g., luci-app-passwall)'
+        required: false
+        type: string
+      theme_choice:
+        description: 'The selected LuCI theme package'
+        required: true
+        type: string
+        default: 'luci-theme-peditx'
+
+jobs:
+  build_firmware:
+    name: Build Firmware
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+
+      - name: 'Install Build Dependencies'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl
+
+      - name: 'Download OpenWrt ImageBuilder'
+        run: |
+          # Construct the filename and URL
+          TARGET_NAME=$(echo "${{ github.event.inputs.device_target }}" | tr '/' '-')
+          IMAGEBUILDER_FILENAME="openwrt-imagebuilder-${{ github.event.inputs.openwrt_version }}-${TARGET_NAME}.Linux-x86_64.tar.xz"
+          IMAGEBUILDER_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}/${IMAGEBUILDER_FILENAME}"
+          
+          echo "Downloading from: ${IMAGEBUILDER_URL}"
+          wget -q "${IMAGEBUILDER_URL}"
+          tar -xf "${IMAGEBUILDER_FILENAME}"
+
+      - name: 'Prepare ImageBuilder Environment'
+        run: |
+          # Find the extracted ImageBuilder directory and save its path
+          IMAGEBUILDER_DIR=$(find . -maxdepth 1 -type d -name "openwrt-imagebuilder-*")
+          echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> $GITHUB_ENV
+
+          # Add custom repository key
+          KEY_DIR="${IMAGEBUILDER_DIR}/etc/opkg/keys"
+          mkdir -p "${KEY_DIR}"
+          cp ./custom-keys/passwall.pub "${KEY_DIR}/"
+          echo "Custom repository key added."
+
+          # Determine the target architecture from ImageBuilder info
+          TARGET_ARCH=$(opkg --arch-file "${IMAGEBUILDER_DIR}/.targetinfo" print-architecture | awk '{print $2}')
+          echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
+          echo "Detected architecture: ${TARGET_ARCH}"
+
+          # Add custom repository feeds dynamically
+          REPO_CONF_FILE="${IMAGEBUILDER_DIR}/etc/opkg/customfeeds.conf"
+          RELEASE_MAJOR_VERSION=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1,2)
+          
+          echo "Adding custom feeds to ${REPO_CONF_FILE}..."
+          echo "src/gz passwall_luci https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_luci" >> "${REPO_CONF_FILE}"
+          echo "src/gz passwall_packages https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_packages" >> "${REPO_CONF_FILE}"
+          echo "src/gz passwall2 https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall2" >> "${REPO_CONF_FILE}"
+          echo "Custom feeds added."
+
+      - name: 'Download Custom IPK Packages'
+        run: |
+          CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
+          mkdir -p "${CUSTOM_PKG_DIR}"
+          
+          # Function to download latest release IPK from a GitHub repo
+          download_latest_ipk() {
+            local REPO_NAME="$1"
+            local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
+            local IPK_URL=$(curl -s "$API_URL" | grep "browser_download_url.*ipk" | cut -d '"' -f 4 | head -n 1)
+            if [ -n "$IPK_URL" ]; then
+              echo "Downloading ${REPO_NAME} from ${IPK_URL}"
+              wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
+            else
+              echo "Warning: Could not find latest release for ${REPO_NAME}"
+            fi
+          }
+
+          # Download architecture-specific themeswitch
+          THEMESWITCH_VERSION=$(curl -s https://api.github.com/repos/peditx/luci-app-themeswitch/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -n "$THEMESWITCH_VERSION" ]; then
+            THEMESWITCH_URL="https://github.com/peditx/luci-app-themeswitch/releases/download/${THEMESWITCH_VERSION}/luci-app-themeswitch_${THEMESWITCH_VERSION}_${{ env.TARGET_ARCH }}.ipk"
+            echo "Downloading themeswitch from ${THEMESWITCH_URL}"
+            wget -q "$THEMESWITCH_URL" -P "${CUSTOM_PKG_DIR}"
+          else
+            echo "Warning: Could not determine themeswitch version."
+          fi
+
+          download_latest_ipk "luci-theme-peditx"
+          download_latest_ipk "luci-theme-carbonpx"
+          
+          echo "--- Custom packages downloaded ---"
+          ls -1 "${CUSTOM_PKG_DIR}"
+
+      - name: 'Build Firmware Image'
+        run: |
+          cd "${{ env.IMAGEBUILDER_DIR }}"
+          
+          # Define base packages that are always included
+          BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
+          
+          # Combine all packages for the final build
+          ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap ${{ github.event.inputs.theme_choice }} luci-app-themeswitch ${{ github.event.inputs.extra_packages }}"
+          
+          echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
+          echo "Final Packages: ${ALL_PACKAGES}"
+
+          make image PROFILE="${{ github.event.inputs.device_profile }}" \
+            PACKAGES="${ALL_PACKAGES}" \
+            FILES="${{ github.workspace }}/files" \
+            BIN_DIR="${{ github.workspace }}/output"
+
+      - name: 'Organize and Rename Output Files'
+        run: |
+          cd "${{ github.workspace }}/output"
+          if [ -z "$(ls -A .)" ]; then
+            echo "Build failed: No files found in output directory."
+            exit 1
+          fi
+          for f in openwrt-*; do
+            mv -- "$f" "PeDitXOS-${f#openwrt-}"
+          done
+          echo "--- Renamed Files ---"
+          ls -1
+
+      - name: 'Upload Firmware to SourceForge'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_PROJECT_NAME: ${{ secrets.SF_PROJECT_NAME }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
+
+          REMOTE_DIR="/home/frs/project/${SF_PROJECT_NAME}/${{ github.event.inputs.openwrt_version }}/"
+          echo "Uploading files to SourceForge at ${REMOTE_DIR}"
+          
+          rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa" \
+            "${{ github.workspace }}/output/" \
+            "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
+            
+          echo "Upload complete."
