@@ -1,6 +1,3 @@
-# .github/workflows/build.yml
-
-# The name of the workflow as it will appear in the Actions tab
 name: 'PeDitXOS Firmware Builder'
 
 # This section defines when the workflow will run.
