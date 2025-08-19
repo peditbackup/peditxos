@@ -99,11 +99,16 @@ jobs:
           KEY_DIR="${IMAGEBUILDER_DIR}/etc/opkg/keys"
           mkdir -p "${KEY_DIR}"
           cp ./custom-keys/passwall.pub "${KEY_DIR}/"
-          REPO_CONF_FILE="${IMAGEBUILDER_DIR}/etc/opkg/customfeeds.conf"
+          
+          # --- FIX: Use the correct filename 'repositories.conf' for ImageBuilder ---
+          REPO_CONF_FILE="${IMAGEBUILDER_DIR}/repositories.conf"
+          
           RELEASE_MAJOR_VERSION=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1,2)
           echo "src/gz passwall_luci https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_luci" >> "${REPO_CONF_FILE}"
           echo "src/gz passwall_packages https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_packages" >> "${REPO_CONF_FILE}"
           echo "src/gz passwall2 https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall2" >> "${REPO_CONF_FILE}"
+          echo "--- Custom repositories added to ${REPO_CONF_FILE} ---"
+          cat "${REPO_CONF_FILE}"
 
       - name: 'Generate Custom UCI Defaults Script'
         run: |
