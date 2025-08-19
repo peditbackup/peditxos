@@ -51,12 +51,25 @@ jobs:
           echo "Downloading from: ${IMAGEBUILDER_URL}"
           wget -q "${IMAGEBUILDER_URL}"
           
-          # Create a predictable directory and extract into it
+          # --- NEW ROBUST EXTRACTION METHOD ---
+          # 1. Extract the archive normally
+          tar -xf "${IMAGEBUILDER_FILENAME}"
+          
+          # 2. Find the name of the directory that was just extracted
+          EXTRACTED_DIR=$(tar -tf "${IMAGEBUILDER_FILENAME}" | head -n 1 | cut -d'/' -f1)
+          if [ -z "$EXTRACTED_DIR" ]; then
+            echo "::error::Could not determine extracted directory name."
+            exit 1
+          fi
+          echo "Detected extracted directory: ${EXTRACTED_DIR}"
+          
+          # 3. Create our predictable directory and move the contents into it
           mkdir imagebuilder
-          tar -xf "${IMAGEBUILDER_FILENAME}" --strip-components=1 -C imagebuilder
+          mv "${EXTRACTED_DIR}"/* imagebuilder/
+          # --- END OF NEW METHOD ---
           
           echo "--- Contents of imagebuilder directory ---"
-          ls -l imagebuilder
+          ls -la imagebuilder
 
       - name: 'Prepare ImageBuilder Environment'
         run: |
