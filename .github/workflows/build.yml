@@ -29,12 +29,23 @@ on:
         description: 'Selected LuCI theme'
         required: true
         type: string
-      # New single input for all advanced settings
-      advanced_settings_json:
-        description: 'A JSON string containing all advanced settings'
+      # Simplified advanced settings (10 inputs total)
+      lan_ip:
+        description: 'The LAN IP address'
         required: false
         type: string
-        default: '{}'
+      wifi_24_enabled:
+        description: 'Enable 2.4GHz WiFi'
+        required: false
+        type: string
+      wifi_24_ssid:
+        description: '2.4GHz WiFi SSID'
+        required: false
+        type: string
+      wifi_24_password:
+        description: '2.4GHz WiFi Password'
+        required: false
+        type: string
 
 jobs:
   build_firmware:
@@ -53,7 +64,7 @@ jobs:
       - name: 'Download and Extract OpenWrt ImageBuilder'
         run: |
           TARGET_NAME=$(echo "${{ github.event.inputs.device_target }}" | tr '/' '-')
-          IMAGEBUILDER_FILENAME="openwrt-imagebuilder-${{ github.event.inputs.openwrt_version }}-${TARGET_NAME}.Linux-x_64.tar.xz"
+          IMAGEBUILDER_FILENAME="openwrt-imagebuilder-${{ github.event.inputs.openwrt_version }}-${TARGET_NAME}.Linux-x86_64.tar.xz"
           IMAGEBUILDER_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}/${IMAGEBUILDER_FILENAME}"
           wget -q "${IMAGEBUILDER_URL}"
           mkdir imagebuilder
@@ -77,38 +88,24 @@ jobs:
       - name: 'Generate Custom UCI Defaults Script'
         run: |
           UCI_SCRIPT_PATH="${{ github.workspace }}/files/etc/uci-defaults/99-advanced-settings"
-          
-          # Parse the JSON string using jq and export values to environment variables
-          echo '${{ github.event.inputs.advanced_settings_json }}' | jq -r 'to_entries|map("export \(.key)=\"\(.value|tostring)\"")|.[]' >> $GITHUB_ENV
-          
-          # Source the new environment variables so they are available in this step
-          source $GITHUB_ENV
-          
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
-          if [ -n "$root_password" ]; then
-            echo "echo 'root:$root_password' | chpasswd" >> "${UCI_SCRIPT_PATH}"
-          fi
-          if [ -n "$lan_ip" ]; then
-            echo "uci set network.lan.ipaddr='$lan_ip'" >> "${UCI_SCRIPT_PATH}"
+          if [ -n "${{ github.event.inputs.lan_ip }}" ]; then
+            echo "uci set network.lan.ipaddr='${{ github.event.inputs.lan_ip }}'" >> "${UCI_SCRIPT_PATH}"
             echo "uci commit network" >> "${UCI_SCRIPT_PATH}"
           fi
-          if [ "$wifi_24_enabled" = "true" ] && [ -n "$wifi_24_ssid" ]; then
+          
+          if [ "${{ github.event.inputs.wifi_24_enabled }}" = "true" ] && [ -n "${{ github.event.inputs.wifi_24_ssid }}" ]; then
             echo "uci set wireless.radio0.disabled='0'" >> "${UCI_SCRIPT_PATH}"
-            echo "uci set wireless.@wifi-iface[0].ssid='$wifi_24_ssid'" >> "${UCI_SCRIPT_PATH}"
+            echo "uci set wireless.@wifi-iface[0].ssid='${{ github.event.inputs.wifi_24_ssid }}'" >> "${UCI_SCRIPT_PATH}"
             echo "uci set wireless.@wifi-iface[0].encryption='psk2'" >> "${UCI_SCRIPT_PATH}"
-            echo "uci set wireless.@wifi-iface[0].key='$wifi_24_password'" >> "${UCI_SCRIPT_PATH}"
+            echo "uci set wireless.@wifi-iface[0].key='${{ github.event.inputs.wifi_24_password }}'" >> "${UCI_SCRIPT_PATH}"
           else
             echo "uci set wireless.radio0.disabled='1'" >> "${UCI_SCRIPT_PATH}"
           fi
-          if [ "$wifi_5_enabled" = "true" ] && [ -n "$wifi_5_ssid" ]; then
-            echo "uci set wireless.radio1.disabled='0'" >> "${UCI_SCRIPT_PATH}"
-            echo "uci set wireless.@wifi-iface[1].ssid='$wifi_5_ssid'" >> "${UCI_SCRIPT_PATH}"
-            echo "uci set wireless.@wifi-iface[1].encryption='psk2'" >> "${UCI_SCRIPT_PATH}"
-            echo "uci set wireless.@wifi-iface[1].key='$wifi_5_password'" >> "${UCI_SCRIPT_PATH}"
-          else
-            echo "if uci get wireless.radio1 >/dev/null 2>&1; then uci set wireless.radio1.disabled='1'; fi" >> "${UCI_SCRIPT_PATH}"
-          fi
+          
+          # Always disable radio1 (5GHz) if it exists, as it's no longer configurable
+          echo "if uci get wireless.radio1 >/dev/null 2>&1; then uci set wireless.radio1.disabled='1'; fi" >> "${UCI_SCRIPT_PATH}"
           
           echo "uci commit wireless" >> "${UCI_SCRIPT_PATH}"
           echo "exit 0" >> "${UCI_SCRIPT_PATH}"
