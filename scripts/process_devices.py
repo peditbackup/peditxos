@@ -4,6 +4,8 @@ import json
 import sys
 import re
 from html.parser import HTMLParser
+import gzip
+import lzma
 
 # This is the most robust starting point: the main releases directory page.
 RELEASES_PAGE_URL = "https://downloads.openwrt.org/releases/"
@@ -71,10 +73,38 @@ def get_subdirectories(url):
     except requests.exceptions.RequestException:
         return []
 
+def fetch_and_decompress_profiles(url_base):
+    """
+    Tries to fetch profiles.json, then profiles.json.gz, then profiles.json.xz
+    and returns the parsed JSON data.
+    """
+    # Define the order of attempts: plain, gzip, xz
+    attempts = [
+        (".json", None),
+        (".json.gz", gzip.decompress),
+        (".json.xz", lzma.decompress)
+    ]
+    
+    for extension, decompressor in attempts:
+        url = url_base + extension
+        try:
+            resp = requests.get(url, timeout=60)
+            if resp.status_code == 200:
+                print(f"    ... Found profile data at {url}")
+                content = resp.content
+                if decompressor:
+                    content = decompressor(content)
+                return json.loads(content.decode("utf-8"))
+        except (requests.exceptions.RequestException, gzip.BadGzipFile, lzma.LZMAError, json.JSONDecodeError):
+            # If any error occurs, just try the next format
+            continue
+    # If all attempts fail, return None
+    return None
+
 def fetch_all_devices_from_structure(latest_releases):
     """
     Iterates through the discovered stable releases, scrapes their directory structure
-    to find all profiles.json files, and builds a comprehensive device list.
+    to find all profiles files (json, json.gz, json.xz), and builds a comprehensive device list.
     """
     all_processed_devices = []
     
@@ -96,25 +126,20 @@ def fetch_all_devices_from_structure(latest_releases):
             subtargets = get_subdirectories(f"{targets_base_url}{target_dir}")
             for subtarget_dir in subtargets:
                 target_path = f"{target_dir.strip('/')}/{subtarget_dir.strip('/')}"
-                profiles_url = f"{targets_base_url}{target_path}/profiles.json"
+                # We pass the base URL without extension to the helper function
+                profiles_url_base = f"{targets_base_url}{target_path}/profiles"
                 
-                try:
-                    response = requests.get(profiles_url, timeout=60)
-                    if response.status_code == 404:
-                        continue
-                    response.raise_for_status()
-                    profiles_data = response.json()
-                except (requests.exceptions.RequestException, json.JSONDecodeError):
+                profiles_data = fetch_and_decompress_profiles(profiles_url_base)
+                
+                if not profiles_data:
                     continue
                 
                 arch = profiles_data.get('arch_packages')
-                profiles = profiles_data.get('profiles') # Get profiles, can be dict or list
+                profiles = profiles_data.get('profiles')
                 
                 if not all([arch, profiles]):
                     continue
 
-                # --- FINAL CORRECTED LOGIC ---
-                # Handle both new (dict) and old (list) profiles format
                 if isinstance(profiles, dict):
                     # New format (e.g., 23.05): profiles is a dictionary
                     for profile_id, device_details in profiles.items():
@@ -128,7 +153,6 @@ def fetch_all_devices_from_structure(latest_releases):
                 elif isinstance(profiles, list):
                     # Old format (e.g., 21.02): profiles is a list of strings
                     for profile_string in profiles:
-                        # Simple heuristic to create a title from the profile string
                         title = profile_string.replace('_', ' ').replace('-', ' ').title()
                         all_processed_devices.append({
                             "title": title, "target": target_path, "profile": profile_string,
