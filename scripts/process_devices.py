@@ -2,111 +2,133 @@
 import requests
 import json
 import sys
+import re
+from html.parser import HTMLParser
 import subprocess
 
-# This is the most robust starting point: the main releases directory.
+# This is the most robust starting point: the main releases directory page.
 RELEASES_PAGE_URL = "https://downloads.openwrt.org/releases/"
+# We will support these major versions. The script will find the latest point release for each.
+SUPPORTED_MAJOR_VERSIONS = ["23.05", "22.03", "21.02"]
 OUTPUT_FILE = "devices.json"
 
-def get_stable_release_versions():
+class LinkFinder(HTMLParser):
+    """A simple HTML parser to find links in a directory listing page."""
+    def __init__(self):
+        super().__init__()
+        self.links = []
+    def handle_starttag(self, tag, attrs):
+        if tag == 'a':
+            for attr, value in attrs:
+                if attr == 'href':
+                    # We only care about directory links
+                    if value.endswith('/'):
+                        self.links.append(value)
+
+def get_latest_point_releases():
     """
-    Uses the user-provided shell command pipeline to scrape the releases page
-    and get a list of all available version strings. This is the most robust method.
+    Scrapes the main releases page to find the latest point release for each
+    major version we support. This is the most robust method.
     """
     print(f"--> Scraping release versions from {RELEASES_PAGE_URL}...")
-    
-    # The brilliant command provided by the user
-    command = """
-    curl -s https://downloads.openwrt.org/releases/ | \
-    grep -oP '(?<=href=")[0-9]+\.[0-9]+\.[0-9]+/' | \
-    sed 's:/$::' | \
-    jq -R . | \
-    jq -s .
-    """
-    
     try:
-        # Execute the command in a shell
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
-        versions = json.loads(result.stdout)
+        response = requests.get(RELEASES_PAGE_URL, timeout=30)
+        response.raise_for_status()
+        parser = LinkFinder()
+        parser.feed(response.text)
+    except requests.exceptions.RequestException as e:
+        print(f"!!! ERROR: Could not scrape release page. {e}")
+        return {}
+
+    latest_releases = {}
+    version_pattern = re.compile(r'^(\d+\.\d+\.\d+)/$')
+    
+    for link in parser.links:
+        match = version_pattern.match(link)
+        if match:
+            full_version = match.group(1)
+            major_version = '.'.join(full_version.split('.')[:2])
+            
+            if major_version in SUPPORTED_MAJOR_VERSIONS:
+                if major_version not in latest_releases or full_version > latest_releases[major_version]:
+                    latest_releases[major_version] = full_version
+    
+    if not latest_releases:
+        print("!!! ERROR: No matching release versions found on the page.")
+        return {}
         
-        # Filter for the major versions we want to support
-        supported_versions = [
-            v for v in versions 
-            if any(v.startswith(major) for major in ["21.", "22.", "23.", "24."])
-        ]
-        
-        print(f"--> Found {len(supported_versions)} relevant stable release(s).")
-        return sorted(supported_versions, reverse=True)
-        
-    except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
-        print(f"!!! ERROR: Failed to scrape release versions. {e}")
+    print(f"--> Found latest point releases: {latest_releases}")
+    return latest_releases
+
+def get_subdirectories(url):
+    """Fetches an HTML directory listing and returns a list of subdirectories."""
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        parser = LinkFinder()
+        parser.feed(response.text)
+        # Exclude 'Parent Directory' link
+        return [link for link in parser.links if not link.startswith('?')]
+    except requests.exceptions.RequestException:
         return []
 
-def fetch_all_devices_from_structure(versions_to_process):
+def fetch_all_devices_from_structure(latest_releases):
     """
-    Iterates through the discovered stable releases and their targets to build
-    a comprehensive device list by fetching profiles.json for each target.
+    Iterates through the discovered stable releases, scrapes their directory structure
+    to find all profiles.json files, and builds a comprehensive device list.
     """
     all_processed_devices = []
     
-    for version in versions_to_process:
-        targets_url = f"https://downloads.openwrt.org/releases/{version}/targets/targets.json"
-        
-        print(f"\n--- Processing version: {version} from {targets_url} ---")
-        
-        try:
-            print(f"--> Fetching targets list for version {version}...")
-            response = requests.get(targets_url, timeout=60)
-            response.raise_for_status()
-            targets_data = response.json()
-        except requests.exceptions.RequestException as e:
-            print(f"!!! WARNING: Could not fetch targets for version {version}. Skipping. Error: {e}")
-            continue
+    if not latest_releases:
+        print("!!! ERROR: No stable releases found to process.")
+        sys.exit(1)
 
-        if not isinstance(targets_data, list):
-            print(f"!!! WARNING: Expected a list of targets for version {version}. Skipping.")
+    for major_version, version in latest_releases.items():
+        targets_base_url = f"https://downloads.openwrt.org/releases/{version}/targets/"
+        print(f"\n--- Processing version: {version} ---")
+        
+        targets = get_subdirectories(targets_base_url)
+        if not targets:
+            print(f"!!! WARNING: No targets found for version {version}. Skipping.")
             continue
 
         version_device_count = 0
-        for target_info in targets_data:
-            target_path = target_info.get('path')
-            arch = target_info.get('arch_packages')
-            
-            if not all([target_path, arch]):
-                continue
-
-            # CORRECT LOGIC: Fetch the profiles.json for this specific target
-            profiles_url = f"https://downloads.openwrt.org/releases/{version}/targets/{target_path}/profiles.json"
-            
-            try:
-                # Use a session for potentially better performance
-                s = requests.Session()
-                response = s.get(profiles_url, timeout=60)
-                if response.status_code == 404:
-                    # This is expected for some targets (e.g., imagebuilder or sdk targets)
-                    continue 
-                response.raise_for_status()
-                profiles_data = response.json()
-            except requests.exceptions.RequestException:
-                # Also skip if there's an error fetching the profiles for a specific target
-                continue
+        for target_dir in targets:
+            subtargets = get_subdirectories(f"{targets_base_url}{target_dir}")
+            for subtarget_dir in subtargets:
+                target_path = f"{target_dir.strip('/')}/{subtarget_dir.strip('/')}"
+                profiles_url = f"{targets_base_url}{target_path}/profiles.json"
                 
-            profiles = profiles_data.get('profiles', [])
-            for device in profiles:
-                title = device.get('title')
-                profile_id = device.get('profile')
+                try:
+                    response = requests.get(profiles_url, timeout=60)
+                    if response.status_code == 404:
+                        continue
+                    response.raise_for_status()
+                    profiles_data = response.json()
+                except (requests.exceptions.RequestException, json.JSONDecodeError):
+                    continue
                 
-                if not all([title, profile_id]):
+                arch = profiles_data.get('arch_packages')
+                profiles = profiles_data.get('profiles', [])
+                
+                if not all([arch, profiles]):
                     continue
 
-                all_processed_devices.append({
-                    "title": title,
-                    "target": target_path,
-                    "profile": profile_id,
-                    "version": version,
-                    "arch": arch
-                })
-                version_device_count += 1
+                for device in profiles:
+                    title = device.get('title')
+                    profile_id = device.get('profile')
+                    
+                    if not all([title, profile_id]):
+                        continue
+
+                    all_processed_devices.append({
+                        "title": title,
+                        "target": target_path,
+                        "profile": profile_id,
+                        "version": version,
+                        "arch": arch
+                    })
+                    version_device_count += 1
         
         print(f"--> Processed {version_device_count} devices for version {version}.")
 
@@ -114,9 +136,7 @@ def fetch_all_devices_from_structure(versions_to_process):
         print("!!! ERROR: No devices were processed across all versions.")
         sys.exit(1)
 
-    # Sort the final combined list by title, then by version descending
     all_processed_devices.sort(key=lambda x: (x['title'], x['version']), reverse=True)
-    
     print(f"\n>>> Successfully processed a total of {len(all_processed_devices)} device entries.")
 
     try:
@@ -128,7 +148,7 @@ def fetch_all_devices_from_structure(versions_to_process):
         sys.exit(1)
 
 if __name__ == "__main__":
-    stable_versions = get_stable_release_versions()
+    stable_versions = get_latest_point_releases()
     if stable_versions:
         fetch_all_devices_from_structure(stable_versions)
     else:
