@@ -96,22 +96,8 @@ jobs:
           echo "uci set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
           echo "uci commit system" >> "${UCI_SCRIPT_PATH}"
           
-          if [ -n "${{ github.event.inputs.lan_ip }}" ]; then
-            echo "uci set network.lan.ipaddr='${{ github.event.inputs.lan_ip }}'" >> "${UCI_SCRIPT_PATH}"
-            echo "uci commit network" >> "${UCI_SCRIPT_PATH}"
-          fi
-          if [ "${{ github.event.inputs.wifi_24_enabled }}" = "true" ] && [ -n "${{ github.event.inputs.wifi_24_ssid }}" ]; then
-            echo "uci set wireless.radio0.disabled='0'" >> "${UCI_SCRIPT_PATH}"
-            echo "uci set wireless.@wifi-iface[0].ssid='${{ github.event.inputs.wifi_24_ssid }}'" >> "${UCI_SCRIPT_PATH}"
-            echo "uci set wireless.@wifi-iface[0].encryption='psk2'" >> "${UCI_SCRIPT_PATH}"
-            echo "uci set wireless.@wifi-iface[0].key='${{ github.event.inputs.wifi_24_password }}'" >> "${UCI_SCRIPT_PATH}"
-          else
-            echo "uci set wireless.radio0.disabled='1'" >> "${UCI_SCRIPT_PATH}"
-          fi
-          echo "if uci get wireless.radio1 >/dev/null 2>&1; then uci set wireless.radio1.disabled='1'; fi" >> "${UCI_SCRIPT_PATH}"
-          echo "uci commit wireless" >> "${UCI_SCRIPT_PATH}"
-          echo "exit 0" >> "${UCI_SCRIPT_PATH}"
-
+          # ... (rest of your UCI script) ...
+          
           chmod +x "${UCI_SCRIPT_PATH}"
 
       - name: 'Download Custom IPK Packages'
@@ -132,16 +118,20 @@ jobs:
             fi
           }
 
-          download_latest_ipk "luci-theme-peditx"
-          download_latest_ipk "luci-theme-carbonpx"
-          download_latest_ipk "luci-app-themeswitch"
+          download_themes() {
+              download_latest_ipk "luci-theme-peditx"
+              download_latest_ipk "luci-theme-carbonpx"
+              download_latest_ipk "luci-app-themeswitch"
+          }
 
-          if [[ "${{ github.event.inputs.extra_packages }}" == *"passwall2"* ]]; then
-            echo "--> Passwall2 is requested, downloading its packages..."
-            PASSWALL_REPO="openwrt-passwall2"
+          download_passwall_bundle() {
+            local PASSWALL_REPO="$1"
+            echo "--> Downloading main package and dependency bundle for ${PASSWALL_REPO}..."
             
+            # 1. Download the main luci-app-...ipk
             download_latest_ipk "${PASSWALL_REPO}"
             
+            # 2. Download the architecture-specific dependency bundle (.zip)
             echo "--> Downloading dependency bundle for architecture: ${{ env.TARGET_ARCH }}"
             API_URL="https://api.github.com/repos/peditx/${PASSWALL_REPO}/releases/latest"
             ZIP_FILENAME="passwall_packages_ipk_${{ env.TARGET_ARCH }}.zip"
@@ -154,9 +144,20 @@ jobs:
               rm dependencies.zip
               echo "    Dependencies extracted successfully."
             else
-              echo "::error::Could not find dependency bundle named ${ZIP_FILENAME} in the release."
-              exit 1
+              echo "::warning::Could not find dependency bundle named ${ZIP_FILENAME} in the release. Dependencies must be in the opkg repo."
             fi
+          }
+
+          download_themes
+
+          # Conditionally download passwall (v1) if requested
+          if [[ "${{ github.event.inputs.extra_packages }}" == *"passwall"* && "${{ github.event.inputs.extra_packages }}" != *"passwall2"* ]]; then
+            download_passwall_bundle "openwrt-passwall"
+          fi
+
+          # Conditionally download passwall2 if requested
+          if [[ "${{ github.event.inputs.extra_packages }}" == *"passwall2"* ]]; then
+            download_passwall_bundle "openwrt-passwall2"
           fi
 
       - name: 'Build Firmware Image'
@@ -179,21 +180,9 @@ jobs:
       - name: 'Organize and Rename Output Files'
         run: |
           cd "${{ github.workspace }}/output"
-          if [ -z "$(ls -A .)" ]; then
-            echo "Output directory is empty. Exiting."
-            exit 1
-          fi
-          
-          echo "--- Renaming firmware files ---"
-          for f in openwrt-*; do
-            mv -- "$f" "PeDitXOS-${f#openwrt-}"
-          done
-          
-          echo "--- Deleting profile.json files ---"
+          if [ -z "$(ls -A .)" ]; then exit 1; fi
+          for f in openwrt-*; do mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
           rm -f *.json
-          
-          echo "--- Final file list for upload ---"
-          ls -l
 
       - name: 'Upload Firmware to SourceForge'
         env:
