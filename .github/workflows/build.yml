@@ -108,14 +108,9 @@ jobs:
             fi
           }
 
-          download_themes() {
-              download_latest_ipk "luci-theme-peditx"
-              download_latest_ipk "luci-theme-carbonpx"
-              download_latest_ipk "luci-app-themeswitch"
-          }
-
           download_passwall_bundle() {
             local PASSWALL_REPO="$1"
+            echo "--> Downloading main package and dependency bundle for ${PASSWALL_REPO}..."
             download_latest_ipk "${PASSWALL_REPO}"
             API_URL="https://api.github.com/repos/peditx/${PASSWALL_REPO}/releases/latest"
             ZIP_FILENAME="passwall_packages_ipk_${{ env.TARGET_ARCH }}.zip"
@@ -129,13 +124,30 @@ jobs:
             fi
           }
 
-          download_themes
+          # Download themes
+          download_latest_ipk "luci-theme-peditx"
+          download_latest_ipk "luci-theme-carbonpx"
+          download_latest_ipk "luci-app-themeswitch"
 
-          if [[ "${{ github.event.inputs.extra_packages }}" == *"passwall"* && "${{ github.event.inputs.extra_packages }}" != *"passwall2"* ]]; then
+          # New robust logic to check for each package individually
+          DOWNLOAD_V1="false"
+          DOWNLOAD_V2="false"
+
+          for pkg in ${{ github.event.inputs.extra_packages }}; do
+            if [[ "$pkg" == "luci-app-passwall" ]]; then
+              DOWNLOAD_V1="true"
+            fi
+            if [[ "$pkg" == "luci-app-passwall2" ]]; then
+              DOWNLOAD_V2="true"
+            fi
+          done
+
+          if [[ "$DOWNLOAD_V1" == "true" ]]; then
+            echo "--> Passwall v1 is requested. Downloading..."
             download_passwall_bundle "openwrt-passwall"
           fi
-
-          if [[ "${{ github.event.inputs.extra_packages }}" == *"passwall2"* ]]; then
+          if [[ "$DOWNLOAD_V2" == "true" ]]; then
+            echo "--> Passwall v2 is requested. Downloading..."
             download_passwall_bundle "openwrt-passwall2"
           fi
 
@@ -146,8 +158,6 @@ jobs:
           make clean
 
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
-          
-          # Add -dnsmasq to remove the base package and resolve the conflict
           ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap -dnsmasq ${{ github.event.inputs.extra_packages }}"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
