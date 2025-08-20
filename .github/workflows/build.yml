@@ -85,24 +85,26 @@ jobs:
           mkdir imagebuilder
           tar -xf "${IMAGEBUILDER_FILENAME}" --strip-components=1 -C imagebuilder
 
-      # Step 4: Prepare the build environment (add custom repos, etc.)
+      # Step 4: Prepare the build environment (disable signature check for testing)
       - name: 'Prepare ImageBuilder Environment'
         run: |
           IMAGEBUILDER_DIR="imagebuilder"
           echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> $GITHUB_ENV
           TARGET_ARCH="${{ github.event.inputs.target_arch }}"
           echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
-          KEY_DIR="${IMAGEBUILDER_DIR}/etc/opkg/keys"
-          mkdir -p "${KEY_DIR}"
-          cp ./custom-keys/passwall.pub "${KEY_DIR}/"
           
           REPO_CONF_FILE="${IMAGEBUILDER_DIR}/repositories.conf"
           RELEASE_MAJOR_VERSION=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1,2)
           
-          # --- FINAL FIX: Use individual 'echo' commands to prevent any indentation or parsing issues ---
+          # Add custom repos and disable signature check for testing
           echo "src/gz passwall_luci https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_luci" >> "${REPO_CONF_FILE}"
+          echo "option check_signature 0" >> "${REPO_CONF_FILE}"
+          
           echo "src/gz passwall_packages https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_packages" >> "${REPO_CONF_FILE}"
+          echo "option check_signature 0" >> "${REPO_CONF_FILE}"
+
           echo "src/gz passwall2 https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall2" >> "${REPO_CONF_FILE}"
+          echo "option check_signature 0" >> "${REPO_CONF_FILE}"
           
           echo "--- Custom repositories added to ${REPO_CONF_FILE} ---"
           cat "${REPO_CONF_FILE}"
@@ -110,7 +112,9 @@ jobs:
       # Step 5: Create a custom script for advanced settings
       - name: 'Generate Custom UCI Defaults Script'
         run: |
-          UCI_SCRIPT_PATH="${{ github.workspace }}/files/etc/uci-defaults/99-advanced-settings"
+          UCI_SCRIPT_DIR="${{ github.workspace }}/files/etc/uci-defaults"
+          mkdir -p "${UCI_SCRIPT_DIR}" # Create the directory if it doesn't exist
+          UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-advanced-settings"
           
           # Start the script with a shebang
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
@@ -154,7 +158,7 @@ jobs:
           }
           THEMESWITCH_VERSION=$(curl -s https://api.github.com/repos/peditx/luci-app-themeswitch/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
           if [ -n "$THEMESWITCH_VERSION" ]; then
-            THEMESWITCH_URL="https://github.com/peditx/luci-app-themeswitch/releases/download/${THEMESWITCH_VERSION}/luci-app-themeswitch_${THEMESWITCH_VERSION}_${{ env.TARGET_ARCH }}.ipk"
+            THEMESWITCH_URL="https://github.com/peditx/luci-app-themeswitch/releases/download/${THEMESWITCH_VERSION}/luci-app-themeswitch_${THEMESWITCH_VERSION}_all.ipk"
             wget -q "$THEMESWITCH_URL" -P "${CUSTOM_PKG_DIR}"
           fi
           download_latest_ipk "luci-theme-peditx"
@@ -170,7 +174,6 @@ jobs:
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
 
-          # Added V=s for verbose output to see the exact error
           make image PROFILE="${{ github.event.inputs.device_profile }}" \
             PACKAGES="${ALL_PACKAGES}" \
             FILES="${{ github.workspace }}/files" \
