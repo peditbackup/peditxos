@@ -134,9 +134,9 @@ jobs:
             
             # 2. Download the architecture-specific dependency bundle (.zip)
             echo "--> Downloading dependency bundle for architecture: ${{ env.TARGET_ARCH }}"
-            local API_URL="https://api.github.com/repos/peditx/${PASSWALL_REPO}/releases/latest"
-            local ZIP_FILENAME="passwall_packages_ipk_${{ env.TARGET_ARCH }}.zip"
-            local ZIP_URL=$(curl -sL "$API_URL" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
+            API_URL="https://api.github.com/repos/peditx/${PASSWALL_REPO}/releases/latest"
+            ZIP_FILENAME="passwall_packages_ipk_${{ env.TARGET_ARCH }}.zip"
+            ZIP_URL=$(curl -sL "$API_URL" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
 
             if [ -n "$ZIP_URL" ]; then
               echo "    Found dependency bundle: ${ZIP_URL}"
