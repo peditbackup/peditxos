@@ -145,7 +145,7 @@ jobs:
           # Make the script executable
           chmod +x "${UCI_SCRIPT_PATH}"
 
-      # Step 6: Download your custom .ipk packages
+      # Step 6: Download your custom .ipk packages (Using your confirmed logic)
       - name: 'Download Custom IPK Packages'
         run: |
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
@@ -158,7 +158,7 @@ jobs:
           }
           THEMESWITCH_VERSION=$(curl -s https://api.github.com/repos/peditx/luci-app-themeswitch/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
           if [ -n "$THEMESWITCH_VERSION" ]; then
-            THEMESWITCH_URL="https://github.com/peditx/luci-app-themeswitch/releases/download/${THEMESWITCH_VERSION}/luci-app-themeswitch_${THEMESWITCH_VERSION}_all.ipk"
+            THEMESWITCH_URL="https://github.com/peditx/luci-app-themeswitch/releases/download/${THEMESWITCH_VERSION}/luci-app-themeswitch_${THEMESWITCH_VERSION}_${{ env.TARGET_ARCH }}.ipk"
             wget -q "$THEMESWITCH_URL" -P "${CUSTOM_PKG_DIR}"
           fi
           download_latest_ipk "luci-theme-peditx"
