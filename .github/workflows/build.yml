@@ -83,12 +83,12 @@ jobs:
           REPO_CONF_FILE="${IMAGEBUILDER_DIR}/repositories.conf"
           RELEASE_MAJOR_VERSION=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1,2)
           
-          # Add custom repositories
+          # Add custom repositories for dependencies
           echo "src/gz passwall_luci https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_luci" >> "${REPO_CONF_FILE}"
           echo "src/gz passwall_packages https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_packages" >> "${REPO_CONF_FILE}"
           echo "src/gz passwall2 https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall2" >> "${REPO_CONF_FILE}"
           
-          # Disable signature checking globally using sed
+          # Disable signature checking globally
           sed -i 's/^option check_signature.*/option check_signature 0/' "${REPO_CONF_FILE}"
           
           echo "--- Custom repositories added and signature check disabled ---"
@@ -99,7 +99,13 @@ jobs:
           UCI_SCRIPT_DIR="${{ github.workspace }}/files/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-advanced-settings"
+          
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
+
+          # Set custom hostname
+          echo "uci set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
+          echo "uci commit system" >> "${UCI_SCRIPT_PATH}"
+          
           if [ -n "${{ github.event.inputs.lan_ip }}" ]; then
             echo "uci set network.lan.ipaddr='${{ github.event.inputs.lan_ip }}'" >> "${UCI_SCRIPT_PATH}"
             echo "uci commit network" >> "${UCI_SCRIPT_PATH}"
@@ -121,27 +127,47 @@ jobs:
         run: |
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
+          
+          # A robust function to download the latest IPK from a GitHub release
           download_latest_ipk() {
             local REPO_NAME="$1"
+            echo "--> Fetching latest IPK for peditx/${REPO_NAME}..."
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
-            local IPK_URL=$(curl -s "$API_URL" | grep "browser_download_url.*ipk" | cut -d '"' -f 4 | head -n 1)
-            if [ -n "$IPK_URL" ]; then wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"; fi
+            local IPK_URL=$(curl -sL "$API_URL" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
+            
+            if [ -n "$IPK_URL" ]; then
+              echo "    Downloading from: ${IPK_URL}"
+              wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
+            else
+              echo "::error::Could not find a .ipk file in the latest release of peditx/${REPO_NAME}."
+              exit 1
+            fi
           }
+          
+          # Download themes
+          download_latest_ipk "luci-theme-peditx"
+          download_latest_ipk "luci-theme-carbonpx"
+          # The old way for themeswitch
           THEMESWITCH_VERSION=$(curl -s https://api.github.com/repos/peditx/luci-app-themeswitch/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
           if [ -n "$THEMESWITCH_VERSION" ]; then
             THEMESWITCH_URL="https://github.com/peditx/luci-app-themeswitch/releases/download/${THEMESWITCH_VERSION}/luci-app-themeswitch_${THEMESWITCH_VERSION}_${{ env.TARGET_ARCH }}.ipk"
             wget -q "$THEMESWITCH_URL" -P "${CUSTOM_PKG_DIR}"
           fi
-          download_latest_ipk "luci-theme-peditx"
-          download_latest_ipk "luci-theme-carbonpx"
+          
+          # Conditionally download passwall/passwall2 if they are in extra_packages
+          if [[ "${{ github.event.inputs.extra_packages }}" == *"passwall"* && "${{ github.event.inputs.extra_packages }}" != *"passwall2"* ]]; then
+            echo "--> Passwall is requested, downloading from GitHub releases..."
+            download_latest_ipk "openwrt-passwall"
+          fi
+          if [[ "${{ github.event.inputs.extra_packages }}" == *"passwall2"* ]]; then
+            echo "--> Passwall2 is requested, downloading from GitHub releases..."
+            download_latest_ipk "openwrt-passwall2"
+          fi
 
       - name: 'Build Firmware Image'
         run: |
           cd "${{ env.IMAGEBUILDER_DIR }}"
-
-          # Clean the cache from previous failed runs to force a fresh download of package lists
-          echo "--- Cleaning build cache to ensure fresh package lists ---"
-          make clean
+          # 'make clean' has been removed for speed as requested
 
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
           ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch ${{ github.event.inputs.extra_packages }}"
