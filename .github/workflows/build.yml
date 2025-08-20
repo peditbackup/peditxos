@@ -83,12 +83,10 @@ jobs:
           REPO_CONF_FILE="${IMAGEBUILDER_DIR}/repositories.conf"
           RELEASE_MAJOR_VERSION=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1,2)
           
-          # Add custom repositories for dependencies
           echo "src/gz passwall_luci https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_luci" >> "${REPO_CONF_FILE}"
           echo "src/gz passwall_packages https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_packages" >> "${REPO_CONF_FILE}"
           echo "src/gz passwall2 https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall2" >> "${REPO_CONF_FILE}"
           
-          # Disable signature checking globally
           sed -i 's/^option check_signature.*/option check_signature 0/' "${REPO_CONF_FILE}"
           
           echo "--- Custom repositories added and signature check disabled ---"
@@ -101,8 +99,6 @@ jobs:
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-advanced-settings"
           
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
-
-          # Set custom hostname
           echo "uci set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
           echo "uci commit system" >> "${UCI_SCRIPT_PATH}"
           
@@ -128,7 +124,6 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # A robust function to download the latest IPK from a GitHub release
           download_latest_ipk() {
             local REPO_NAME="$1"
             echo "--> Fetching latest IPK for peditx/${REPO_NAME}..."
@@ -144,7 +139,6 @@ jobs:
             fi
           }
           
-          # Download themes
           download_latest_ipk "luci-theme-peditx"
           download_latest_ipk "luci-theme-carbonpx"
           # The old way for themeswitch
@@ -154,20 +148,22 @@ jobs:
             wget -q "$THEMESWITCH_URL" -P "${CUSTOM_PKG_DIR}"
           fi
           
-          # Conditionally download passwall/passwall2 if they are in extra_packages
-          if [[ "${{ github.event.inputs.extra_packages }}" == *"passwall"* && "${{ github.event.inputs.extra_packages }}" != *"passwall2"* ]]; then
-            echo "--> Passwall is requested, downloading from GitHub releases..."
+          # Download passwall and its custom dependencies if requested
+          if [[ "${{ github.event.inputs.extra_packages }}" == *"passwall"* ]]; then
+            echo "--> Passwall or Passwall2 is requested, downloading all dependencies..."
             download_latest_ipk "openwrt-passwall"
-          fi
-          if [[ "${{ github.event.inputs.extra_packages }}" == *"passwall2"* ]]; then
-            echo "--> Passwall2 is requested, downloading from GitHub releases..."
             download_latest_ipk "openwrt-passwall2"
+            download_latest_ipk "openwrt-tcping"
+            download_latest_ipk "openwrt-geoview"
+            # Add other custom dependencies here if needed
           fi
 
       - name: 'Build Firmware Image'
         run: |
           cd "${{ env.IMAGEBUILDER_DIR }}"
-          # 'make clean' has been removed for speed as requested
+          # Re-adding make clean to prevent caching issues, which is the likely root cause
+          echo "--- Cleaning build cache to ensure a fresh start ---"
+          make clean
 
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
           ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch ${{ github.event.inputs.extra_packages }}"
