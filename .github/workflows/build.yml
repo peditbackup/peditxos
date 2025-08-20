@@ -79,25 +79,19 @@ jobs:
           echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> $GITHUB_ENV
           TARGET_ARCH="${{ github.event.inputs.target_arch }}"
           echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
-          
           REPO_CONF_FILE="${IMAGEBUILDER_DIR}/repositories.conf"
           sed -i 's/^option check_signature.*/option check_signature 0/' "${REPO_CONF_FILE}"
-          
           echo "--- Signature check disabled ---"
-          cat "${REPO_CONF_FILE}"
 
       - name: 'Generate Custom UCI Defaults Script'
         run: |
           UCI_SCRIPT_DIR="${{ github.workspace }}/files/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-advanced-settings"
-          
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           echo "uci set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
           echo "uci commit system" >> "${UCI_SCRIPT_PATH}"
-          
-          # ... (rest of your UCI script) ...
-          
+          # ... (rest of UCI script) ...
           chmod +x "${UCI_SCRIPT_PATH}"
 
       - name: 'Download Custom IPK Packages'
@@ -107,14 +101,10 @@ jobs:
           
           download_latest_ipk() {
             local REPO_NAME="$1"
-            echo "--> Fetching latest IPK for peditx/${REPO_NAME}..."
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
             local IPK_URL=$(curl -sL "$API_URL" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
-            
             if [ -n "$IPK_URL" ]; then
               wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
-            else
-              echo "::warning::Could not find a standalone .ipk in peditx/${REPO_NAME} release."
             fi
           }
 
@@ -126,36 +116,25 @@ jobs:
 
           download_passwall_bundle() {
             local PASSWALL_REPO="$1"
-            echo "--> Downloading main package and dependency bundle for ${PASSWALL_REPO}..."
-            
-            # 1. Download the main luci-app-...ipk
             download_latest_ipk "${PASSWALL_REPO}"
-            
-            # 2. Download the architecture-specific dependency bundle (.zip)
-            echo "--> Downloading dependency bundle for architecture: ${{ env.TARGET_ARCH }}"
             API_URL="https://api.github.com/repos/peditx/${PASSWALL_REPO}/releases/latest"
             ZIP_FILENAME="passwall_packages_ipk_${{ env.TARGET_ARCH }}.zip"
             ZIP_URL=$(curl -sL "$API_URL" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
-
             if [ -n "$ZIP_URL" ]; then
-              echo "    Found dependency bundle: ${ZIP_URL}"
               wget -q "${ZIP_URL}" -O dependencies.zip
               unzip -o dependencies.zip -d "${CUSTOM_PKG_DIR}"
               rm dependencies.zip
-              echo "    Dependencies extracted successfully."
             else
-              echo "::warning::Could not find dependency bundle named ${ZIP_FILENAME} in the release. Dependencies must be in the opkg repo."
+              echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO}."
             fi
           }
 
           download_themes
 
-          # Conditionally download passwall (v1) if requested
           if [[ "${{ github.event.inputs.extra_packages }}" == *"passwall"* && "${{ github.event.inputs.extra_packages }}" != *"passwall2"* ]]; then
             download_passwall_bundle "openwrt-passwall"
           fi
 
-          # Conditionally download passwall2 if requested
           if [[ "${{ github.event.inputs.extra_packages }}" == *"passwall2"* ]]; then
             download_passwall_bundle "openwrt-passwall2"
           fi
@@ -167,7 +146,9 @@ jobs:
           make clean
 
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
-          ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap ${{ github.event.inputs.extra_packages }}"
+          
+          # Add -dnsmasq to remove the base package and resolve the conflict
+          ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap -dnsmasq ${{ github.event.inputs.extra_packages }}"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
@@ -194,11 +175,8 @@ jobs:
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
-          
           REMOTE_DIR="/home/frs/project/${SF_PROJECT_NAME}/${{ github.event.inputs.openwrt_version }}/"
-          
           rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o IdentitiesOnly=yes" \
             "${{ github.workspace }}/output/" \
             "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
-            
           echo "Upload complete."
