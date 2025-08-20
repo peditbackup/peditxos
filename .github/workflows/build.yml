@@ -1,9 +1,13 @@
 # .github/workflows/build.yml
 
+# The name of the workflow as it will appear in the Actions tab
 name: 'PeDitXOS Firmware Builder'
 
+# This section defines when the workflow will run.
+# 'workflow_dispatch' allows us to trigger it manually via the API from our website.
 on:
   workflow_dispatch:
+    # Define all the inputs that our website will send
     inputs:
       device_target:
         description: 'Device Target'
@@ -47,21 +51,26 @@ on:
         required: false
         type: string
 
+# Defines the jobs that will run in this workflow
 jobs:
   build_firmware:
     name: Build Firmware
+    # The type of machine to run the job on
     runs-on: ubuntu-latest
 
+    # A sequence of tasks that make up the job
     steps:
+      # Step 1: Check out the repository code
       - name: 'Checkout Repository'
         uses: actions/checkout@v4
 
+      # Step 2: Install necessary tools on the runner
       - name: 'Install Build Dependencies'
         run: |
-          # Added zstd to handle .tar.zst files
           sudo apt-get update
           sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd
 
+      # Step 3: Download and extract the OpenWrt ImageBuilder
       - name: 'Download and Extract OpenWrt ImageBuilder'
         run: |
           TARGET_DIR_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}"
@@ -76,11 +85,7 @@ jobs:
           mkdir imagebuilder
           tar -xf "${IMAGEBUILDER_FILENAME}" --strip-components=1 -C imagebuilder
 
-      - name: 'Debug: List Extracted Files'
-        run: |
-          echo "--- Listing contents of the extracted imagebuilder directory ---"
-          ls -R imagebuilder
-
+      # Step 4: Prepare the build environment (add custom repos, etc.)
       - name: 'Prepare ImageBuilder Environment'
         run: |
           IMAGEBUILDER_DIR="imagebuilder"
@@ -94,26 +99,29 @@ jobs:
           REPO_CONF_FILE="${IMAGEBUILDER_DIR}/repositories.conf"
           RELEASE_MAJOR_VERSION=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1,2)
           
-          # --- FIX: Use a 'here document' for robust writing of URLs ---
-          cat << EOF >> "${REPO_CONF_FILE}"
-          src/gz passwall_luci https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_luci
-          src/gz passwall_packages https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_packages
-          src/gz passwall2 https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall2
-          EOF
+          # --- FINAL FIX: Use individual 'echo' commands to prevent any indentation or parsing issues ---
+          echo "src/gz passwall_luci https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_luci" >> "${REPO_CONF_FILE}"
+          echo "src/gz passwall_packages https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_packages" >> "${REPO_CONF_FILE}"
+          echo "src/gz passwall2 https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall2" >> "${REPO_CONF_FILE}"
           
           echo "--- Custom repositories added to ${REPO_CONF_FILE} ---"
           cat "${REPO_CONF_FILE}"
 
+      # Step 5: Create a custom script for advanced settings
       - name: 'Generate Custom UCI Defaults Script'
         run: |
           UCI_SCRIPT_PATH="${{ github.workspace }}/files/etc/uci-defaults/99-advanced-settings"
+          
+          # Start the script with a shebang
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
+          # Set LAN IP address if provided
           if [ -n "${{ github.event.inputs.lan_ip }}" ]; then
             echo "uci set network.lan.ipaddr='${{ github.event.inputs.lan_ip }}'" >> "${UCI_SCRIPT_PATH}"
             echo "uci commit network" >> "${UCI_SCRIPT_PATH}"
           fi
           
+          # Configure 2.4GHz WiFi
           if [ "${{ github.event.inputs.wifi_24_enabled }}" = "true" ] && [ -n "${{ github.event.inputs.wifi_24_ssid }}" ]; then
             echo "uci set wireless.radio0.disabled='0'" >> "${UCI_SCRIPT_PATH}"
             echo "uci set wireless.@wifi-iface[0].ssid='${{ github.event.inputs.wifi_24_ssid }}'" >> "${UCI_SCRIPT_PATH}"
@@ -123,13 +131,17 @@ jobs:
             echo "uci set wireless.radio0.disabled='1'" >> "${UCI_SCRIPT_PATH}"
           fi
           
+          # Always disable radio1 (5GHz) if it exists
           echo "if uci get wireless.radio1 >/dev/null 2>&1; then uci set wireless.radio1.disabled='1'; fi" >> "${UCI_SCRIPT_PATH}"
           
+          # Commit wireless changes and exit
           echo "uci commit wireless" >> "${UCI_SCRIPT_PATH}"
           echo "exit 0" >> "${UCI_SCRIPT_PATH}"
           
+          # Make the script executable
           chmod +x "${UCI_SCRIPT_PATH}"
 
+      # Step 6: Download your custom .ipk packages
       - name: 'Download Custom IPK Packages'
         run: |
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
@@ -148,6 +160,7 @@ jobs:
           download_latest_ipk "luci-theme-peditx"
           download_latest_ipk "luci-theme-carbonpx"
 
+      # Step 7: Build the final firmware image
       - name: 'Build Firmware Image'
         run: |
           cd "${{ env.IMAGEBUILDER_DIR }}"
@@ -163,12 +176,14 @@ jobs:
             FILES="${{ github.workspace }}/files" \
             BIN_DIR="${{ github.workspace }}/output" V=s
 
+      # Step 8: Rename the output files for branding
       - name: 'Organize and Rename Output Files'
         run: |
           cd "${{ github.workspace }}/output"
           if [ -z "$(ls -A .)" ]; then exit 1; fi
           for f in openwrt-*; do mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
 
+      # Step 9: Upload the final firmware to SourceForge
       - name: 'Upload Firmware to SourceForge'
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
