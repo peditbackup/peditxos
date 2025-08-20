@@ -96,10 +96,10 @@ jobs:
           
           # --- FIX: Use a 'here document' for robust writing of URLs ---
           cat << EOF >> "${REPO_CONF_FILE}"
-src/gz passwall_luci https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_luci
-src/gz passwall_packages https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_packages
-src/gz passwall2 https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall2
-EOF
+          src/gz passwall_luci https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_luci
+          src/gz passwall_packages https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall_packages
+          src/gz passwall2 https://repo.peditxdl.ir/passwall-packages/releases/packages-${RELEASE_MAJOR_VERSION}/${TARGET_ARCH}/passwall2
+          EOF
           
           echo "--- Custom repositories added to ${REPO_CONF_FILE} ---"
           cat "${REPO_CONF_FILE}"
