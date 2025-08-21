@@ -222,13 +222,15 @@ jobs:
 
       - name: 'Report Success to Firestore'
         run: |
-          gcloud beta firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
+          # MODIFIED: Removed 'beta' from the command itself
+          gcloud firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
             --update-fields=status="completed",downloadUrl="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download" \
             --project=${{ steps.auth.outputs.project_id }}
 
       - name: 'Report Failure to Firestore'
         if: failure()
         run: |
-          gcloud beta firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
+          # MODIFIED: Removed 'beta' from the command itself
+          gcloud firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
             --update-fields=status="failed",downloadUrl="" \
             --project=${{ steps.auth.outputs.project_id }}
