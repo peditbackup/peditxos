@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Corrected Version - 2)
+# .github/workflows/build.yml (Final Version using Google Cloud CLI)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -204,31 +204,23 @@ jobs:
             "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
           echo "Upload complete."
 
-      # <<< MODIFIED: Replaced the non-existent action with a valid one
-      - name: 'Report Success to Firestore'
-        uses: raviraj-v/firestore-update-document-action@v1
+      # <<< MODIFIED: Using Google's official auth action
+      - name: 'Authenticate to Google Cloud'
+        uses: 'google-github-actions/auth@v2'
         with:
-          gcp_service_account: ${{ secrets.GCP_SA_KEY }}
-          project_id: 'peditxos'
-          collection: 'users/${{ github.event.inputs.user_id }}/builds'
-          document: '${{ github.event.inputs.build_id }}'
-          fields: |
-            {
-              "status": "completed",
-              "downloadUrl": "https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download"
-            }
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
 
-      # <<< MODIFIED: Replaced the non-existent action with a valid one
+      # <<< MODIFIED: Using gcloud CLI to update Firestore
+      - name: 'Report Success to Firestore'
+        run: |
+          gcloud firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
+            --update-fields=status="completed",downloadUrl="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download" \
+            --project=peditxos
+
+      # <<< MODIFIED: Using gcloud CLI to update Firestore
       - name: 'Report Failure to Firestore'
         if: failure()
-        uses: raviraj-v/firestore-update-document-action@v1
-        with:
-          gcp_service_account: ${{ secrets.GCP_SA_KEY }}
-          project_id: 'peditxos'
-          collection: 'users/${{ github.event.inputs.user_id }}/builds'
-          document: '${{ github.event.inputs.build_id }}'
-          fields: |
-            {
-              "status": "failed",
-              "downloadUrl": null
-            }
+        run: |
+          gcloud firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
+            --update-fields=status="failed",downloadUrl="" \
+            --project=peditxos
