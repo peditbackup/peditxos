@@ -1,11 +1,10 @@
-# .github/workflows/build.yml
+# .github/workflows/build.yml (Final Corrected Version)
 
 name: 'PeDitXOS Firmware Builder'
 
 on:
   workflow_dispatch:
     inputs:
-      # These two inputs are required by the backend to update Firestore
       user_id:
         description: 'Firebase User ID'
         required: true
@@ -62,7 +61,7 @@ jobs:
           sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
-        id: download_ib # <<< MODIFIED: Added an ID to this step
+        id: download_ib
         run: |
           TARGET_DIR_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}"
           IMAGEBUILDER_FILENAME=$(curl -s "${TARGET_DIR_URL}/" | grep -o 'href="[^"]*imagebuilder[^"]*\.tar\.\(xz\|zst\)"' | head -n 1 | sed 's/href="//;s/"//')
@@ -70,7 +69,7 @@ jobs:
             echo "::error::Could not automatically find the ImageBuilder filename."
             exit 1
           fi
-          echo "IMAGEBUILDER_FILENAME=${IMAGEBUILDER_FILENAME}" >> $GITHUB_OUTPUT # <<< ADDED: Output the filename for later use
+          echo "IMAGEBUILDER_FILENAME=${IMAGEBUILDER_FILENAME}" >> $GITHUB_OUTPUT
           IMAGEBUILDER_URL="${TARGET_DIR_URL}/${IMAGEBUILDER_FILENAME}"
           wget "${IMAGEBUILDER_URL}"
           mkdir imagebuilder
@@ -86,7 +85,7 @@ jobs:
           sed -i 's/^option check_signature.*/option check_signature 0/' "${REPO_CONF_FILE}"
           echo "--- Signature check disabled ---"
 
-      - name: 'Generate Custom UCI Defaults Script' # <<< MODIFIED: This whole step is updated
+      - name: 'Generate Custom UCI Defaults Script'
         run: |
           UCI_SCRIPT_DIR="${{ github.workspace }}/files/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
@@ -94,23 +93,15 @@ jobs:
           
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
-          
-          # Set hostname
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
-
-          # Set LAN IP if provided
           if [ -n "${{ github.event.inputs.lan_ip }}" ]; then
             echo "set network.lan.ipaddr='${{ github.event.inputs.lan_ip }}'" >> "${UCI_SCRIPT_PATH}"
           fi
-
-          # Disable 2.4GHz WiFi if requested
           if [ "${{ github.event.inputs.wifi_24_enabled }}" = "false" ]; then
             echo "set wireless.radio0.disabled='1'" >> "${UCI_SCRIPT_PATH}"
           fi
-          
           echo "commit" >> "${UCI_SCRIPT_PATH}"
           echo "EOF" >> "${UCI_SCRIPT_PATH}"
-          
           chmod +x "${UCI_SCRIPT_PATH}"
           echo "--- Custom settings script generated ---"
           cat "${UCI_SCRIPT_PATH}"
@@ -119,7 +110,7 @@ jobs:
         run: |
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
-          
+          # ... (rest of the download script remains the same) ...
           download_latest_ipk() {
             local REPO_NAME="$1"
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
@@ -128,7 +119,6 @@ jobs:
               wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
             fi
           }
-
           download_passwall_bundle() {
             local PASSWALL_REPO="$1"
             echo "--> Downloading main package and dependency bundle for ${PASSWALL_REPO}..."
@@ -144,16 +134,10 @@ jobs:
               echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO}."
             fi
           }
-
-          # Download themes
           download_latest_ipk "luci-theme-peditx"
           download_latest_ipk "luci-theme-carbonpx"
-          # download_latest_ipk "luci-app-themeswitch" # This package seems to not exist in peditx repos
-
-          # New robust logic to check for each package individually
           DOWNLOAD_V1="false"
           DOWNLOAD_V2="false"
-
           for pkg in ${{ github.event.inputs.extra_packages }}; do
             if [[ "$pkg" == "luci-app-passwall" ]]; then
               DOWNLOAD_V1="true"
@@ -162,7 +146,6 @@ jobs:
               DOWNLOAD_V2="true"
             fi
           done
-
           if [[ "$DOWNLOAD_V1" == "true" ]]; then
             echo "--> Passwall v1 is requested. Downloading..."
             download_passwall_bundle "openwrt-passwall"
@@ -175,45 +158,34 @@ jobs:
       - name: 'Build Firmware Image'
         run: |
           cd "${{ env.IMAGEBUILDER_DIR }}"
-          echo "--- Cleaning build cache to ensure a fresh start ---"
           make clean
-
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
           ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap -dnsmasq ${{ github.event.inputs.theme_choice }} ${{ github.event.inputs.extra_packages }}"
-          
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
-
           make image PROFILE="${{ github.event.inputs.device_profile }}" \
             PACKAGES="${ALL_PACKAGES}" \
             FILES="${{ github.workspace }}/files" \
             BIN_DIR="${{ github.workspace }}/output" V=s
 
       - name: 'Organize and Rename Output Files'
-        id: organize_files # <<< ADDED: Added an ID to this step
+        id: organize_files
         run: |
           cd "${{ github.workspace }}/output"
           if [ -z "$(ls -A .)" ]; then 
             echo "::error::Build failed, no files were generated."
             exit 1
           fi
-          # Find the sysupgrade file, which is the most important one
           SYSUPGRADE_FILE=$(find . -name "*sysupgrade.bin*" | head -n 1)
           if [ -z "$SYSUPGRADE_FILE" ]; then
             echo "::error::Sysupgrade file not found!"
             exit 1
           fi
-          # Remove './' prefix
           SYSUPGRADE_FILE=${SYSUPGRADE_FILE#./}
           echo "SYSUPGRADE_FILE=${SYSUPGRADE_FILE}" >> $GITHUB_OUTPUT
-          
-          # Rename all files
           for f in openwrt-*; do mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
-          
-          # Update the variable with the new name
           RENAMED_FILE="PeDitXOS-${SYSUPGRADE_FILE#openwrt-}"
           echo "RENAMED_FILE=${RENAMED_FILE}" >> $GITHUB_OUTPUT
-          
           rm -f *.json
 
       - name: 'Upload Firmware to SourceForge'
@@ -226,34 +198,37 @@ jobs:
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
-          
           REMOTE_DIR="/home/frs/project/${SF_PROJECT_NAME}/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/"
-          
           rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o IdentitiesOnly=yes" \
             "${{ github.workspace }}/output/" \
             "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
-            
           echo "Upload complete."
 
-      - name: 'Report Success to Firestore' # <<< ADDED: New step for success feedback
-        uses: w9jds/firebase-action@v1.5.0
+      # <<< MODIFIED: Replaced the old action with a specialized one for Firestore
+      - name: 'Report Success to Firestore'
+        uses: gautam-in/firestore-update-action@v1
         with:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
           PROJECT_ID: 'peditxos'
-          DATABASE_ENTRY: 'users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}'
-          DATA: |
-            status: completed
-            downloadUrl: https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download
-        env:
-          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+          COLLECTION_PATH: 'users/${{ github.event.inputs.user_id }}/builds'
+          DOCUMENT_ID: '${{ github.event.inputs.build_id }}'
+          UPDATE_DATA: |
+            {
+              "status": "completed",
+              "downloadUrl": "https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download"
+            }
 
-      - name: 'Report Failure to Firestore' # <<< ADDED: New step for failure feedback
+      # <<< MODIFIED: Replaced the old action with a specialized one for Firestore
+      - name: 'Report Failure to Firestore'
         if: failure()
-        uses: w9jds/firebase-action@v1.5.0
+        uses: gautam-in/firestore-update-action@v1
         with:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
           PROJECT_ID: 'peditxos'
-          DATABASE_ENTRY: 'users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}'
-          DATA: |
-            status: failed
-            downloadUrl: null
-        env:
-          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+          COLLECTION_PATH: 'users/${{ github.event.inputs.user_id }}/builds'
+          DOCUMENT_ID: '${{ github.event.inputs.build_id }}'
+          UPDATE_DATA: |
+            {
+              "status": "failed",
+              "downloadUrl": null
+            }
