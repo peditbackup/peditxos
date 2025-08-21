@@ -46,7 +46,7 @@ on:
         description: 'Enable 2.4GHz WiFi'
         required: false
         type: string
-      
+
 jobs:
   build_firmware:
     name: Build Firmware
@@ -62,6 +62,7 @@ jobs:
           sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
+        id: download_ib # <<< MODIFIED: Added an ID to this step
         run: |
           TARGET_DIR_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}"
           IMAGEBUILDER_FILENAME=$(curl -s "${TARGET_DIR_URL}/" | grep -o 'href="[^"]*imagebuilder[^"]*\.tar\.\(xz\|zst\)"' | head -n 1 | sed 's/href="//;s/"//')
@@ -69,6 +70,7 @@ jobs:
             echo "::error::Could not automatically find the ImageBuilder filename."
             exit 1
           fi
+          echo "IMAGEBUILDER_FILENAME=${IMAGEBUILDER_FILENAME}" >> $GITHUB_OUTPUT # <<< ADDED: Output the filename for later use
           IMAGEBUILDER_URL="${TARGET_DIR_URL}/${IMAGEBUILDER_FILENAME}"
           wget "${IMAGEBUILDER_URL}"
           mkdir imagebuilder
@@ -84,16 +86,34 @@ jobs:
           sed -i 's/^option check_signature.*/option check_signature 0/' "${REPO_CONF_FILE}"
           echo "--- Signature check disabled ---"
 
-      - name: 'Generate Custom UCI Defaults Script'
+      - name: 'Generate Custom UCI Defaults Script' # <<< MODIFIED: This whole step is updated
         run: |
           UCI_SCRIPT_DIR="${{ github.workspace }}/files/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
-          UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-advanced-settings"
+          UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
+          
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
-          echo "uci set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
-          echo "uci commit system" >> "${UCI_SCRIPT_PATH}"
-          # ... (rest of UCI script) ...
+          echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
+          
+          # Set hostname
+          echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
+
+          # Set LAN IP if provided
+          if [ -n "${{ github.event.inputs.lan_ip }}" ]; then
+            echo "set network.lan.ipaddr='${{ github.event.inputs.lan_ip }}'" >> "${UCI_SCRIPT_PATH}"
+          fi
+
+          # Disable 2.4GHz WiFi if requested
+          if [ "${{ github.event.inputs.wifi_24_enabled }}" = "false" ]; then
+            echo "set wireless.radio0.disabled='1'" >> "${UCI_SCRIPT_PATH}"
+          fi
+          
+          echo "commit" >> "${UCI_SCRIPT_PATH}"
+          echo "EOF" >> "${UCI_SCRIPT_PATH}"
+          
           chmod +x "${UCI_SCRIPT_PATH}"
+          echo "--- Custom settings script generated ---"
+          cat "${UCI_SCRIPT_PATH}"
 
       - name: 'Download Custom IPK Packages'
         run: |
@@ -128,7 +148,7 @@ jobs:
           # Download themes
           download_latest_ipk "luci-theme-peditx"
           download_latest_ipk "luci-theme-carbonpx"
-          download_latest_ipk "luci-app-themeswitch"
+          # download_latest_ipk "luci-app-themeswitch" # This package seems to not exist in peditx repos
 
           # New robust logic to check for each package individually
           DOWNLOAD_V1="false"
@@ -151,7 +171,7 @@ jobs:
             echo "--> Passwall v2 is requested. Downloading..."
             download_passwall_bundle "openwrt-passwall2"
           fi
-
+      
       - name: 'Build Firmware Image'
         run: |
           cd "${{ env.IMAGEBUILDER_DIR }}"
@@ -159,7 +179,7 @@ jobs:
           make clean
 
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
-          ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap -dnsmasq ${{ github.event.inputs.extra_packages }}"
+          ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap -dnsmasq ${{ github.event.inputs.theme_choice }} ${{ github.event.inputs.extra_packages }}"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
@@ -170,10 +190,30 @@ jobs:
             BIN_DIR="${{ github.workspace }}/output" V=s
 
       - name: 'Organize and Rename Output Files'
+        id: organize_files # <<< ADDED: Added an ID to this step
         run: |
           cd "${{ github.workspace }}/output"
-          if [ -z "$(ls -A .)" ]; then exit 1; fi
+          if [ -z "$(ls -A .)" ]; then 
+            echo "::error::Build failed, no files were generated."
+            exit 1
+          fi
+          # Find the sysupgrade file, which is the most important one
+          SYSUPGRADE_FILE=$(find . -name "*sysupgrade.bin*" | head -n 1)
+          if [ -z "$SYSUPGRADE_FILE" ]; then
+            echo "::error::Sysupgrade file not found!"
+            exit 1
+          fi
+          # Remove './' prefix
+          SYSUPGRADE_FILE=${SYSUPGRADE_FILE#./}
+          echo "SYSUPGRADE_FILE=${SYSUPGRADE_FILE}" >> $GITHUB_OUTPUT
+          
+          # Rename all files
           for f in openwrt-*; do mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
+          
+          # Update the variable with the new name
+          RENAMED_FILE="PeDitXOS-${SYSUPGRADE_FILE#openwrt-}"
+          echo "RENAMED_FILE=${RENAMED_FILE}" >> $GITHUB_OUTPUT
+          
           rm -f *.json
 
       - name: 'Upload Firmware to SourceForge'
@@ -186,8 +226,34 @@ jobs:
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
-          REMOTE_DIR="/home/frs/project/${SF_PROJECT_NAME}/${{ github.event.inputs.openwrt_version }}/"
+          
+          REMOTE_DIR="/home/frs/project/${SF_PROJECT_NAME}/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/"
+          
           rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o IdentitiesOnly=yes" \
             "${{ github.workspace }}/output/" \
             "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
+            
           echo "Upload complete."
+
+      - name: 'Report Success to Firestore' # <<< ADDED: New step for success feedback
+        uses: w9jds/firebase-action@v1.5.0
+        with:
+          PROJECT_ID: 'peditxos'
+          DATABASE_ENTRY: 'users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}'
+          DATA: |
+            status: completed
+            downloadUrl: https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+
+      - name: 'Report Failure to Firestore' # <<< ADDED: New step for failure feedback
+        if: failure()
+        uses: w9jds/firebase-action@v1.5.0
+        with:
+          PROJECT_ID: 'peditxos'
+          DATABASE_ENTRY: 'users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}'
+          DATA: |
+            status: failed
+            downloadUrl: null
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
