@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version with --quiet flag for gcloud)
+# .github/workflows/build.yml (Final Version with gcloud beta component installation)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -216,17 +216,19 @@ jobs:
       - name: 'Set up Cloud SDK'
         uses: 'google-github-actions/setup-gcloud@v2'
 
+      # <<< NEW STEP: Explicitly install beta components non-interactively
+      - name: 'Install gcloud beta components'
+        run: gcloud components install beta --quiet
+
       - name: 'Report Success to Firestore'
         run: |
-          # MODIFIED: Added '--quiet' to auto-accept component installation
           gcloud beta firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
             --update-fields=status="completed",downloadUrl="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download" \
-            --project=${{ steps.auth.outputs.project_id }} --quiet
+            --project=${{ steps.auth.outputs.project_id }}
 
       - name: 'Report Failure to Firestore'
         if: failure()
         run: |
-          # MODIFIED: Added '--quiet' to auto-accept component installation
           gcloud beta firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
             --update-fields=status="failed",downloadUrl="" \
-            --project=${{ steps.auth.outputs.project_id }} --quiet
+            --project=${{ steps.auth.outputs.project_id }}
