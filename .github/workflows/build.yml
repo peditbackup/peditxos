@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Corrected Version)
+# .github/workflows/build.yml (Final Corrected Version - 2)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -204,30 +204,30 @@ jobs:
             "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
           echo "Upload complete."
 
-      # <<< MODIFIED: Replaced the old action with a specialized one for Firestore
+      # <<< MODIFIED: Replaced the non-existent action with a valid one
       - name: 'Report Success to Firestore'
-        uses: gautam-in/firestore-update-action@v1
+        uses: raviraj-v/firestore-update-document-action@v1
         with:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
-          PROJECT_ID: 'peditxos'
-          COLLECTION_PATH: 'users/${{ github.event.inputs.user_id }}/builds'
-          DOCUMENT_ID: '${{ github.event.inputs.build_id }}'
-          UPDATE_DATA: |
+          gcp_service_account: ${{ secrets.GCP_SA_KEY }}
+          project_id: 'peditxos'
+          collection: 'users/${{ github.event.inputs.user_id }}/builds'
+          document: '${{ github.event.inputs.build_id }}'
+          fields: |
             {
               "status": "completed",
               "downloadUrl": "https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download"
             }
 
-      # <<< MODIFIED: Replaced the old action with a specialized one for Firestore
+      # <<< MODIFIED: Replaced the non-existent action with a valid one
       - name: 'Report Failure to Firestore'
         if: failure()
-        uses: gautam-in/firestore-update-action@v1
+        uses: raviraj-v/firestore-update-document-action@v1
         with:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
-          PROJECT_ID: 'peditxos'
-          COLLECTION_PATH: 'users/${{ github.event.inputs.user_id }}/builds'
-          DOCUMENT_ID: '${{ github.event.inputs.build_id }}'
-          UPDATE_DATA: |
+          gcp_service_account: ${{ secrets.GCP_SA_KEY }}
+          project_id: 'peditxos'
+          collection: 'users/${{ github.event.inputs.user_id }}/builds'
+          document: '${{ github.event.inputs.build_id }}'
+          fields: |
             {
               "status": "failed",
               "downloadUrl": null
