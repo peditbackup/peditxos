@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version using Google Cloud CLI)
+# .github/workflows/build.yml (Final Version using Google Cloud CLI - Beta)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -51,7 +51,6 @@ jobs:
     name: Build Firmware
     runs-on: ubuntu-latest
 
-    # <<< ADDED: Set permissions for Google Cloud authentication
     permissions:
       contents: 'read'
       id-token: 'write'
@@ -209,24 +208,25 @@ jobs:
           echo "Upload complete."
 
       - name: 'Authenticate to Google Cloud'
-        id: 'auth' # <<< MODIFIED: Added ID
+        id: 'auth'
         uses: 'google-github-actions/auth@v2'
         with:
           credentials_json: '${{ secrets.GCP_SA_KEY }}'
 
-      # <<< ADDED: New step to setup gcloud CLI
       - name: 'Set up Cloud SDK'
         uses: 'google-github-actions/setup-gcloud@v2'
 
       - name: 'Report Success to Firestore'
         run: |
-          gcloud firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
+          # <<< MODIFIED: Added 'beta' to the gcloud command
+          gcloud beta firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
             --update-fields=status="completed",downloadUrl="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download" \
             --project=${{ steps.auth.outputs.project_id }}
 
       - name: 'Report Failure to Firestore'
         if: failure()
         run: |
-          gcloud firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
+          # <<< MODIFIED: Added 'beta' to the gcloud command
+          gcloud beta firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
             --update-fields=status="failed",downloadUrl="" \
             --project=${{ steps.auth.outputs.project_id }}
