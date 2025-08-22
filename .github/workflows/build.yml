@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Corrected Version with increased x86 rootfs size)
+# .github/workflows/build.yml (Final Version with new upload structure and fixes)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -174,7 +174,6 @@ jobs:
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
           
-          # MODIFIED: Conditionally add a larger rootfs partsize for x86 targets
           if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
             echo "x86 target detected. Increasing rootfs partition size to 512MB."
             make image PROFILE="${{ github.event.inputs.device_profile }}" \
@@ -203,7 +202,7 @@ jobs:
           echo "--- Listing contents of output directory ---"
           ls -R ${{ github.workspace }}/output
 
-      - name: 'Organize and Rename Output Files'
+      - name: 'Organize, Rename, and Compress Files'
         id: organize_files
         run: |
           cd "${{ github.workspace }}/output"
@@ -211,17 +210,32 @@ jobs:
             echo "::error::Build failed, no files were generated."
             exit 1
           fi
-          SYSUPGRADE_FILE=$(find . -name "*sysupgrade.bin*" | head -n 1)
-          if [ -z "$SYSUPGRADE_FILE" ]; then
-            echo "::error::Sysupgrade file not found!"
+          
+          # Smartly find the main flashable image file
+          PRIMARY_IMAGE=$(find . -name "*sysupgrade.bin*" -o -name "*squashfs-combined-efi.img.gz*" | head -n 1)
+          if [ -z "$PRIMARY_IMAGE" ]; then
+            echo "::error::No primary flashable image (sysupgrade or efi) found!"
             exit 1
           fi
-          SYSUPGRADE_FILE=${SYSUPGRADE_FILE#./}
-          echo "SYSUPGRADE_FILE=${SYSUPGRADE_FILE}" >> $GITHUB_OUTPUT
+          
+          # Rename all files with the 'openwrt-' prefix
           for f in openwrt-*; do mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
-          RENAMED_FILE="PeDitXOS-${SYSUPGRADE_FILE#openwrt-}"
-          echo "RENAMED_FILE=${RENAMED_FILE}" >> $GITHUB_OUTPUT
+
+          # Remove unwanted json file
           rm -f *.json
+
+          # Create a timestamp for the archive
+          TIMESTAMP=$(date +'%Y-%m-%d_%H-%M')
+          
+          # Create a unique archive name
+          ARCHIVE_NAME="PeDitXOS-${{ github.event.inputs.device_profile }}-${TIMESTAMP}.zip"
+          
+          # Compress all files into the archive
+          zip -r "${ARCHIVE_NAME}" .
+          
+          # Set outputs for later steps
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+          echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_OUTPUT
 
       - name: 'Upload Firmware to SourceForge'
         env:
@@ -233,10 +247,15 @@ jobs:
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
-          REMOTE_DIR="/home/frs/project/${SF_PROJECT_NAME}/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/"
+          
+          # Construct the new remote directory path
+          REMOTE_DIR="/home/frs/project/${SF_PROJECT_NAME}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/"
+          
+          # Upload only the compressed archive
           rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o IdentitiesOnly=yes" \
-            "${{ github.workspace }}/output/" \
+            "${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}" \
             "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
+            
           rm -f ~/.ssh/id_rsa
           echo "Upload complete."
 
@@ -246,7 +265,9 @@ jobs:
           echo "--> Updating Firestore (success)..."
           ACCESS_TOKEN=$(gcloud auth print-access-token)
           PROJECT_ID="${{ steps.auth.outputs.project_id }}"
-          DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download"
+          
+          # Construct the new download URL
+          DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}/download"
           
           JSON_PAYLOAD=$(cat <<EOF
           {
