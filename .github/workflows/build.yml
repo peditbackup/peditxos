@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version with new upload structure and fixes)
+# .github/workflows/build.yml (Final Version using lftp for reliable uploads)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -62,7 +62,8 @@ jobs:
       - name: 'Install Build Dependencies'
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip
+          # MODIFIED: Added lftp for robust file transfers
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
 
       - name: 'Authenticate to Google Cloud'
         id: 'auth'
@@ -234,20 +235,32 @@ jobs:
           SF_USERNAME: ${{ secrets.SF_USERNAME }}
           SF_PROJECT_NAME: ${{ secrets.SF_PROJECT_NAME }}
         run: |
+          # Prepare SSH key for lftp
           mkdir -p ~/.ssh
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
+
+          # Define local and remote paths
+          REMOTE_BASE_DIR="/home/frs/project/${SF_PROJECT_NAME}"
+          REMOTE_UPLOAD_DIR="${REMOTE_BASE_DIR}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
+          LOCAL_FILE_PATH="${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
+
+          echo "Connecting to sftp://frs.sourceforge.net as user ${SF_USERNAME}"
+          echo "Remote directory to create: ${REMOTE_UPLOAD_DIR}"
+          echo "Local file to upload: ${LOCAL_FILE_PATH}"
           
-          REMOTE_DIR="/home/frs/project/${SF_PROJECT_NAME}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/"
+          # Use lftp to connect, create the directory structure, and upload the file
+          lftp -c "
+          set sftp:connect-program 'ssh -a -x -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes';
+          open -u ${SF_USERNAME}, sftp://frs.sourceforge.net;
+          mkdir -p ${REMOTE_UPLOAD_DIR};
+          cd ${REMOTE_UPLOAD_DIR};
+          put ${LOCAL_FILE_PATH};
+          bye;
+          "
           
-          # MODIFIED: Added -T to disable pseudo-terminal allocation for the restricted shell
-          ssh -T -i ~/.ssh/id_rsa -o IdentitiesOnly=yes "${SF_USERNAME}@frs.sourceforge.net" "mkdir -p ${REMOTE_DIR}"
-          
-          rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o IdentitiesOnly=yes" \
-            "${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}" \
-            "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
-            
+          # Clean up the private key
           rm -f ~/.ssh/id_rsa
           echo "Upload complete."
 
