@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version using lftp for reliable uploads)
+# .github/workflows/build.yml (Final Version with lftp and users directory)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -62,7 +62,6 @@ jobs:
       - name: 'Install Build Dependencies'
         run: |
           sudo apt-get update
-          # MODIFIED: Added lftp for robust file transfers
           sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
 
       - name: 'Authenticate to Google Cloud'
@@ -221,7 +220,7 @@ jobs:
           for f in openwrt-*; do mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
           rm -f *.json
 
-          TIMESTAMP=$(date +'%Y-%m-%d_%H-%M')
+          TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
           ARCHIVE_NAME="PeDitXOS-${{ github.event.inputs.device_profile }}-${TIMESTAMP}.zip"
           
           zip -r "${ARCHIVE_NAME}" .
@@ -235,14 +234,12 @@ jobs:
           SF_USERNAME: ${{ secrets.SF_USERNAME }}
           SF_PROJECT_NAME: ${{ secrets.SF_PROJECT_NAME }}
         run: |
-          # Prepare SSH key for lftp
           mkdir -p ~/.ssh
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
-
-          # Define local and remote paths
-          REMOTE_BASE_DIR="/home/frs/project/${SF_PROJECT_NAME}"
+          
+          REMOTE_BASE_DIR="/home/frs/project/${SF_PROJECT_NAME}/users"
           REMOTE_UPLOAD_DIR="${REMOTE_BASE_DIR}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
           LOCAL_FILE_PATH="${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
 
@@ -250,7 +247,6 @@ jobs:
           echo "Remote directory to create: ${REMOTE_UPLOAD_DIR}"
           echo "Local file to upload: ${LOCAL_FILE_PATH}"
           
-          # Use lftp to connect, create the directory structure, and upload the file
           lftp -c "
           set sftp:connect-program 'ssh -a -x -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes';
           open -u ${SF_USERNAME}, sftp://frs.sourceforge.net;
@@ -260,7 +256,6 @@ jobs:
           bye;
           "
           
-          # Clean up the private key
           rm -f ~/.ssh/id_rsa
           echo "Upload complete."
 
@@ -271,7 +266,7 @@ jobs:
           ACCESS_TOKEN=$(gcloud auth print-access-token)
           PROJECT_ID="${{ steps.auth.outputs.project_id }}"
           
-          DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}/download"
+          DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}/download"
           
           JSON_PAYLOAD=$(cat <<EOF
           {
