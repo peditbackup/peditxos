@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version using an external script)
+# .github/workflows/build.yml (Final Corrected Version with Diagnostics and Permission Fix)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -59,7 +59,6 @@ jobs:
       - name: 'Checkout Repository'
         uses: actions/checkout@v4
 
-      # ... (تمام مراحل ساخت فریمور بدون تغییر باقی می‌مانند) ...
       - name: 'Install Build Dependencies'
         run: |
           sudo apt-get update
@@ -222,7 +221,6 @@ jobs:
             "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
           echo "Upload complete."
 
-      # --- Firestore Update Steps ---
       - name: 'Authenticate to Google Cloud'
         id: 'auth'
         uses: 'google-github-actions/auth@v2'
@@ -235,11 +233,9 @@ jobs:
       - name: 'Install gcloud beta components'
         run: gcloud components install beta --quiet
 
-      - name: 'Make update script executable'
-        run: chmod +x scripts/update_firestore.sh # Assuming the script is in a 'scripts' folder
-
       - name: 'Report Success to Firestore'
         run: |
+          chmod +x scripts/update_firestore.sh
           ./scripts/update_firestore.sh \
             "${{ steps.auth.outputs.project_id }}" \
             "${{ github.event.inputs.user_id }}" \
@@ -250,6 +246,7 @@ jobs:
       - name: 'Report Failure to Firestore'
         if: failure()
         run: |
+          chmod +x scripts/update_firestore.sh
           ./scripts/update_firestore.sh \
             "${{ steps.auth.outputs.project_id }}" \
             "${{ github.event.inputs.user_id }}" \
