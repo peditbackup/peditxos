@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version with lftp and users directory)
+# .github/workflows/build.yml (Final Version with Corrected SourceForge URL)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -266,7 +266,8 @@ jobs:
           ACCESS_TOKEN=$(gcloud auth print-access-token)
           PROJECT_ID="${{ steps.auth.outputs.project_id }}"
           
-          DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}/download"
+          # MODIFIED: Removed the '/download' suffix from the URL
+          DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
           
           JSON_PAYLOAD=$(cat <<EOF
           {
