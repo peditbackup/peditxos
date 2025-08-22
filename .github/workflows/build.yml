@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Corrected Version with Robust Error Handling)
+# .github/workflows/build.yml (Final Corrected Version with Robust JSON Payload)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -236,23 +236,23 @@ jobs:
           PROJECT_ID="${{ steps.auth.outputs.project_id }}"
           DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download"
           
-          # MODIFIED: Added --fail to make curl exit with an error on HTTP failure
+          # MODIFIED: Construct JSON payload in a variable to avoid here-document issues
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "fields": {
+              "status": { "stringValue": "completed" },
+              "downloadUrl": { "stringValue": "${DOWNLOAD_URL}" }
+            }
+          }
+          EOF
+          )
+
           curl --fail -X PATCH \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-            "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}?updateMask.fieldPaths=status&updateMask.fieldPaths=downloadUrl" \
-            --data-binary @- << DATA
-            {
-              "fields": {
-                "status": {
-                  "stringValue": "completed"
-                },
-                "downloadUrl": {
-                  "stringValue": "${DOWNLOAD_URL}"
-                }
-              }
-            }
-            DATA
+            -d "${JSON_PAYLOAD}" \
+            "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}?updateMask.fieldPaths=status&updateMask.fieldPaths=downloadUrl"
+            
           echo "Firestore update successful."
 
       - name: 'Report Failure to Firestore'
@@ -262,21 +262,21 @@ jobs:
           ACCESS_TOKEN=$(gcloud auth print-access-token)
           PROJECT_ID="${{ steps.auth.outputs.project_id }}"
 
-          # MODIFIED: Added --fail to make curl exit with an error on HTTP failure
+          # MODIFIED: Construct JSON payload in a variable to avoid here-document issues
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "fields": {
+              "status": { "stringValue": "failed" },
+              "downloadUrl": { "nullValue": null }
+            }
+          }
+          EOF
+          )
+
           curl --fail -X PATCH \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-            "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}?updateMask.fieldPaths=status&updateMask.fieldPaths=downloadUrl" \
-            --data-binary @- << DATA
-            {
-              "fields": {
-                "status": {
-                  "stringValue": "failed"
-                },
-                "downloadUrl": {
-                  "nullValue": null
-                }
-              }
-            }
-            DATA
+            -d "${JSON_PAYLOAD}" \
+            "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}?updateMask.fieldPaths=status&updateMask.fieldPaths=downloadUrl"
+            
           echo "Firestore update successful."
