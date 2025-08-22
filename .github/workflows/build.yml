@@ -211,29 +211,20 @@ jobs:
             exit 1
           fi
           
-          # Smartly find the main flashable image file
           PRIMARY_IMAGE=$(find . -name "*sysupgrade.bin*" -o -name "*squashfs-combined-efi.img.gz*" | head -n 1)
           if [ -z "$PRIMARY_IMAGE" ]; then
             echo "::error::No primary flashable image (sysupgrade or efi) found!"
             exit 1
           fi
           
-          # Rename all files with the 'openwrt-' prefix
           for f in openwrt-*; do mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
-
-          # Remove unwanted json file
           rm -f *.json
 
-          # Create a timestamp for the archive
           TIMESTAMP=$(date +'%Y-%m-%d_%H-%M')
-          
-          # Create a unique archive name
           ARCHIVE_NAME="PeDitXOS-${{ github.event.inputs.device_profile }}-${TIMESTAMP}.zip"
           
-          # Compress all files into the archive
           zip -r "${ARCHIVE_NAME}" .
           
-          # Set outputs for later steps
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
           echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_OUTPUT
 
@@ -248,10 +239,11 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
           
-          # Construct the new remote directory path
           REMOTE_DIR="/home/frs/project/${SF_PROJECT_NAME}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/"
           
-          # Upload only the compressed archive
+          # MODIFIED: Create the full remote directory path before uploading
+          ssh -i ~/.ssh/id_rsa -o IdentitiesOnly=yes "${SF_USERNAME}@frs.sourceforge.net" "mkdir -p ${REMOTE_DIR}"
+          
           rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o IdentitiesOnly=yes" \
             "${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}" \
             "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
@@ -266,7 +258,6 @@ jobs:
           ACCESS_TOKEN=$(gcloud auth print-access-token)
           PROJECT_ID="${{ steps.auth.outputs.project_id }}"
           
-          # Construct the new download URL
           DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}/download"
           
           JSON_PAYLOAD=$(cat <<EOF
