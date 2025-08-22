@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version with gcloud beta component installation)
+# .github/workflows/build.yml (Final Corrected Version with Diagnostics)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -171,6 +171,13 @@ jobs:
             FILES="${{ github.workspace }}/files" \
             BIN_DIR="${{ github.workspace }}/output" V=s
 
+      # <<< NEW DIAGNOSTIC STEP
+      - name: 'List Output Directory Contents'
+        if: always() # This step runs even if the build fails
+        run: |
+          echo "--- Listing contents of output directory ---"
+          ls -R ${{ github.workspace }}/output
+
       - name: 'Organize and Rename Output Files'
         id: organize_files
         run: |
@@ -216,21 +223,20 @@ jobs:
       - name: 'Set up Cloud SDK'
         uses: 'google-github-actions/setup-gcloud@v2'
 
-      # <<< NEW STEP: Explicitly install beta components non-interactively
       - name: 'Install gcloud beta components'
         run: gcloud components install beta --quiet
 
       - name: 'Report Success to Firestore'
         run: |
-          # MODIFIED: Removed 'beta' from the command itself
-          gcloud firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
+          # MODIFIED: Added 'beta' back to the command
+          gcloud beta firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
             --update-fields=status="completed",downloadUrl="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download" \
             --project=${{ steps.auth.outputs.project_id }}
 
       - name: 'Report Failure to Firestore'
         if: failure()
         run: |
-          # MODIFIED: Removed 'beta' from the command itself
-          gcloud firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
+          # MODIFIED: Added 'beta' back to the command
+          gcloud beta firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
             --update-fields=status="failed",downloadUrl="" \
             --project=${{ steps.auth.outputs.project_id }}
