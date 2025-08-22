@@ -1,3 +1,5 @@
+# .github/workflows/build.yml (Final Corrected Version)
+
 name: 'PeDitXOS Firmware Builder'
 
 on:
@@ -92,7 +94,7 @@ jobs:
           UCI_SCRIPT_DIR="${{ github.workspace }}/files/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
-
+          
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
@@ -155,7 +157,7 @@ jobs:
             echo "--> Passwall v2 is requested. Downloading..."
             download_passwall_bundle "openwrt-passwall2"
           fi
-
+      
       - name: 'Build Firmware Image'
         id: build_image
         run: |
@@ -187,7 +189,7 @@ jobs:
         id: organize_files
         run: |
           cd "${{ github.workspace }}/output"
-          if [ -z "$(ls -A .)" ]; then
+          if [ -z "$(ls -A .)" ]; then 
             echo "::error::Build failed, no files were generated."
             exit 1
           fi
@@ -226,72 +228,53 @@ jobs:
         with:
           credentials_json: '${{ secrets.GCP_SA_KEY }}'
 
-      - name: 'Set up Cloud SDK'
-        uses: 'google-github-actions/setup-gcloud@v2'
-
-      # --- Report Success to Firestore (using Firestore REST API) ---
       - name: 'Report Success to Firestore'
         if: success()
         run: |
           echo "--> Updating Firestore (success)..."
-          # Get access token from gcloud CLI
           ACCESS_TOKEN=$(gcloud auth print-access-token)
           PROJECT_ID="${{ steps.auth.outputs.project_id }}"
-          USER_ID="${{ github.event.inputs.user_id }}"
-          BUILD_ID="${{ github.event.inputs.build_id }}"
-          RENAMED_FILE="${{ steps.organize_files.outputs.RENAMED_FILE }}"
-          SF_PROJECT_NAME="${{ secrets.SF_PROJECT_NAME }}"
-          OPENWRT_VERSION="${{ github.event.inputs.openwrt_version }}"
-          DEVICE_PROFILE="${{ github.event.inputs.device_profile }}"
+          DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download"
           
-          # Construct the download URL
-          DOWNLOAD_URL="https://sourceforge.net/projects/${SF_PROJECT_NAME}/files/${OPENWRT_VERSION}/${DEVICE_PROFILE}/${RENAMED_FILE}/download"
-
-          # Use curl with a PATCH request to update the document.
-          # We use updateMask to only update the specified fields.
           curl -X PATCH \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-            "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${USER_ID}/builds/${BUILD_ID}?updateMask.fieldPaths=status,downloadUrl" \
-            --data-binary "{
-              \"fields\": {
-                \"status\": {
-                  \"stringValue\": \"completed\"
+            "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}?updateMask.fieldPaths=status&updateMask.fieldPaths=downloadUrl" \
+            --data-binary @- << DATA
+            {
+              "fields": {
+                "status": {
+                  "stringValue": "completed"
                 },
-                \"downloadUrl\": {
-                  \"stringValue\": \"${DOWNLOAD_URL}\"
+                "downloadUrl": {
+                  "stringValue": "${DOWNLOAD_URL}"
                 }
               }
-            }"
-          
+            }
+            DATA
           echo "Firestore update successful."
 
-      # --- Report Failure to Firestore (using Firestore REST API) ---
       - name: 'Report Failure to Firestore'
         if: failure()
         run: |
           echo "--> Updating Firestore (failure)..."
-          # Get access token from gcloud CLI
           ACCESS_TOKEN=$(gcloud auth print-access-token)
           PROJECT_ID="${{ steps.auth.outputs.project_id }}"
-          USER_ID="${{ github.event.inputs.user_id }}"
-          BUILD_ID="${{ github.event.inputs.build_id }}"
-          
-          # Use curl with a PATCH request to update the document.
-          # We use updateMask to only update the specified fields.
+
           curl -X PATCH \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-            "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${USER_ID}/builds/${BUILD_ID}?updateMask.fieldPaths=status,downloadUrl" \
-            --data-binary "{
-              \"fields\": {
-                \"status\": {
-                  \"stringValue\": \"failed\"
+            "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}?updateMask.fieldPaths=status&updateMask.fieldPaths=downloadUrl" \
+            --data-binary @- << DATA
+            {
+              "fields": {
+                "status": {
+                  "stringValue": "failed"
                 },
-                \"downloadUrl\": {
-                  \"nullValue\": null
+                "downloadUrl": {
+                  "nullValue": null
                 }
               }
-            }"
-            
+            }
+            DATA
           echo "Firestore update successful."
