@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version using Node.js and Google Cloud Library)
+# .github/workflows/build.yml (Final Corrected Version with Diagnostics and Node.js Fix)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -213,7 +213,6 @@ jobs:
             "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
           echo "Upload complete."
 
-      # <<< MODIFIED: Switched to a Node.js script for reliability
       - name: 'Setup Node.js'
         uses: actions/setup-node@v4
         with:
@@ -223,32 +222,53 @@ jobs:
         run: npm install @google-cloud/firestore
 
       - name: 'Report Success to Firestore'
+        # MODIFIED: Use environment variables and write secret to a file to avoid syntax errors
+        env:
+          GCP_SA_KEY_JSON: ${{ secrets.GCP_SA_KEY }}
+          USER_ID: ${{ github.event.inputs.user_id }}
+          BUILD_ID: ${{ github.event.inputs.build_id }}
+          DOWNLOAD_URL: https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            const keyFilename = './gcp-sa-key.json';
+            fs.writeFileSync(keyFilename, process.env.GCP_SA_KEY_JSON);
+
             const { Firestore } = require('@google-cloud/firestore');
             const firestore = new Firestore({
               projectId: 'peditxos',
-              credentials: JSON.parse('${{ secrets.GCP_SA_KEY }}')
+              keyFilename: keyFilename
             });
-            const docRef = firestore.doc('users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}');
+
+            const docRef = firestore.doc(`users/${process.env.USER_ID}/builds/${process.env.BUILD_ID}`);
             await docRef.update({
               status: 'completed',
-              downloadUrl: 'https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download'
+              downloadUrl: process.env.DOWNLOAD_URL
             });
             console.log('Successfully updated Firestore document with status: completed');
 
       - name: 'Report Failure to Firestore'
         if: failure()
+        # MODIFIED: Use environment variables and write secret to a file to avoid syntax errors
+        env:
+          GCP_SA_KEY_JSON: ${{ secrets.GCP_SA_KEY }}
+          USER_ID: ${{ github.event.inputs.user_id }}
+          BUILD_ID: ${{ github.event.inputs.build_id }}
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            const keyFilename = './gcp-sa-key.json';
+            fs.writeFileSync(keyFilename, process.env.GCP_SA_KEY_JSON);
+
             const { Firestore } = require('@google-cloud/firestore');
             const firestore = new Firestore({
               projectId: 'peditxos',
-              credentials: JSON.parse('${{ secrets.GCP_SA_KEY }}')
+              keyFilename: keyFilename
             });
-            const docRef = firestore.doc('users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}');
+
+            const docRef = firestore.doc(`users/${process.env.USER_ID}/builds/${process.env.BUILD_ID}`);
             await docRef.update({
               status: 'failed',
               downloadUrl: null
