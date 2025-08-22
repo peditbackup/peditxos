@@ -71,7 +71,7 @@ jobs:
         run: |
           # از URL ثابت و قابل اعتماد استفاده کنید
           TARGET_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}/"
-          IMAGEBUILDER_NAME="openwrt-imagebuilder-${{ github.event.inputs.openwrt_version }}-${{ github.event.inputs.device_target }}.tar.xz"
+          IMAGEBUILDER_NAME=$(curl -s "${TARGET_URL}" | grep -o 'href="[^"]*imagebuilder[^"]*\.tar\.\(xz\|zst\)"' | head -n 1 | sed 's/href="//;s/"//')
           IMAGEBUILDER_URL="${TARGET_URL}${IMAGEBUILDER_NAME}"
           echo "IMAGEBUILDER_URL=${IMAGEBUILDER_URL}"
 
