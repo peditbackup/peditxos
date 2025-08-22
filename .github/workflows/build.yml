@@ -1,5 +1,3 @@
-# .github/workflows/build.yml (Final Corrected Version with Diagnostics and Permission Fix)
-
 name: 'PeDitXOS Firmware Builder'
 
 on:
@@ -63,7 +61,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip
-      
+
       - name: 'Download and Extract OpenWrt ImageBuilder'
         id: download_ib
         run: |
@@ -94,7 +92,7 @@ jobs:
           UCI_SCRIPT_DIR="${{ github.workspace }}/files/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
-          
+
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
@@ -157,7 +155,7 @@ jobs:
             echo "--> Passwall v2 is requested. Downloading..."
             download_passwall_bundle "openwrt-passwall2"
           fi
-      
+
       - name: 'Build Firmware Image'
         id: build_image
         run: |
@@ -189,7 +187,7 @@ jobs:
         id: organize_files
         run: |
           cd "${{ github.workspace }}/output"
-          if [ -z "$(ls -A .)" ]; then 
+          if [ -z "$(ls -A .)" ]; then
             echo "::error::Build failed, no files were generated."
             exit 1
           fi
@@ -219,6 +217,7 @@ jobs:
           rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o IdentitiesOnly=yes" \
             "${{ github.workspace }}/output/" \
             "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
+          rm -f ~/.ssh/id_rsa
           echo "Upload complete."
 
       - name: 'Authenticate to Google Cloud'
@@ -230,25 +229,24 @@ jobs:
       - name: 'Set up Cloud SDK'
         uses: 'google-github-actions/setup-gcloud@v2'
 
-      - name: 'Install gcloud beta components'
-        run: gcloud components install beta --quiet
-
+      # --- Report Success to Firestore (inline, no external script) ---
       - name: 'Report Success to Firestore'
+        if: success()
         run: |
-          chmod +x scripts/update_firestore.sh
-          ./scripts/update_firestore.sh \
-            "${{ steps.auth.outputs.project_id }}" \
-            "${{ github.event.inputs.user_id }}" \
-            "${{ github.event.inputs.build_id }}" \
-            "completed" \
-            "https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download"
+          echo "--> Updating Firestore (success)..."
+          gcloud firestore documents update \
+            "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
+            --project="${{ steps.auth.outputs.project_id }}" \
+            --update-fields="status=completed,downloadUrl=https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download" \
+            --quiet
 
+      # --- Report Failure to Firestore (inline, no external script) ---
       - name: 'Report Failure to Firestore'
         if: failure()
         run: |
-          chmod +x scripts/update_firestore.sh
-          ./scripts/update_firestore.sh \
-            "${{ steps.auth.outputs.project_id }}" \
-            "${{ github.event.inputs.user_id }}" \
-            "${{ github.event.inputs.build_id }}" \
-            "failed"
+          echo "--> Updating Firestore (failure)..."
+          gcloud firestore documents update \
+            "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
+            --project="${{ steps.auth.outputs.project_id }}" \
+            --update-fields="status=failed,downloadUrl=null" \
+            --quiet
