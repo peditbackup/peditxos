@@ -20,6 +20,7 @@ DOWNLOAD_URL="$5" # This will be empty for failures
 
 # --- Main Logic ---
 DOCUMENT_PATH="users/${USER_ID}/builds/${BUILD_ID}"
+GCLOUD_ERROR_LOG="gcloud_error.log"
 
 echo "--> Preparing to update Firestore document..."
 echo "    Document Path: ${DOCUMENT_PATH}"
@@ -37,10 +38,23 @@ else
     UPDATE_FIELDS="status=failed,downloadUrl=null"
 fi
 
-# Run the gcloud command to update the document
+# Run the gcloud command and redirect stderr to a log file.
+# The '|| true' prevents the script from exiting immediately if gcloud fails,
+# allowing us to capture and display the error message first.
 echo "--> Executing gcloud command..."
 gcloud beta firestore documents update "${DOCUMENT_PATH}" \
   --update-fields="${UPDATE_FIELDS}" \
-  --project="${PROJECT_ID}"
+  --project="${PROJECT_ID}" 2> "${GCLOUD_ERROR_LOG}" || true
 
-echo "--> Firestore update completed successfully."
+# Check if the error log file has content. The -s flag checks if the file exists and is not empty.
+if [ -s "${GCLOUD_ERROR_LOG}" ]; then
+    echo "::error::Firestore update failed. See gcloud output below:"
+    # Read the error log line by line and format it for GitHub Actions
+    while IFS= read -r line; do
+        echo "::error::${line}"
+    done < "${GCLOUD_ERROR_LOG}"
+    # Exit with a failure code to make the GitHub Actions step fail
+    exit 1
+else
+    echo "--> Firestore update completed successfully."
+fi
