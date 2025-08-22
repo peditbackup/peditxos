@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version with Corrected SourceForge URL)
+# .github/workflows/build.yml (Final Version with .itb support for Linksys/Belkin devices)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -211,9 +211,10 @@ jobs:
             exit 1
           fi
           
-          PRIMARY_IMAGE=$(find . -name "*sysupgrade.bin*" -o -name "*squashfs-combined-efi.img.gz*" | head -n 1)
+          # MODIFIED: Added *.itb to the search to support modern devices
+          PRIMARY_IMAGE=$(find . -name "*sysupgrade.itb*" -o -name "*sysupgrade.bin*" -o -name "*squashfs-combined-efi.img.gz*" | head -n 1)
           if [ -z "$PRIMARY_IMAGE" ]; then
-            echo "::error::No primary flashable image (sysupgrade or efi) found!"
+            echo "::error::No primary flashable image (sysupgrade .itb, .bin, or efi .img.gz) found!"
             exit 1
           fi
           
@@ -234,11 +235,13 @@ jobs:
           SF_USERNAME: ${{ secrets.SF_USERNAME }}
           SF_PROJECT_NAME: ${{ secrets.SF_PROJECT_NAME }}
         run: |
+          # Prepare SSH key for lftp
           mkdir -p ~/.ssh
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
-          
+
+          # Define local and remote paths
           REMOTE_BASE_DIR="/home/frs/project/${SF_PROJECT_NAME}/users"
           REMOTE_UPLOAD_DIR="${REMOTE_BASE_DIR}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
           LOCAL_FILE_PATH="${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
@@ -247,6 +250,7 @@ jobs:
           echo "Remote directory to create: ${REMOTE_UPLOAD_DIR}"
           echo "Local file to upload: ${LOCAL_FILE_PATH}"
           
+          # Use lftp to connect, create the directory structure, and upload the file
           lftp -c "
           set sftp:connect-program 'ssh -a -x -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes';
           open -u ${SF_USERNAME}, sftp://frs.sourceforge.net;
@@ -256,6 +260,7 @@ jobs:
           bye;
           "
           
+          # Clean up the private key
           rm -f ~/.ssh/id_rsa
           echo "Upload complete."
 
@@ -266,7 +271,6 @@ jobs:
           ACCESS_TOKEN=$(gcloud auth print-access-token)
           PROJECT_ID="${{ steps.auth.outputs.project_id }}"
           
-          # MODIFIED: Removed the '/download' suffix from the URL
           DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
           
           JSON_PAYLOAD=$(cat <<EOF
