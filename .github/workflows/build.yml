@@ -29,6 +29,7 @@ on:
         description: 'OpenWrt Version'
         required: true
         type: string
+        default: '23.05.3'
       extra_packages:
         description: 'Extra packages'
         required: false
@@ -37,6 +38,7 @@ on:
         description: 'Selected LuCI theme'
         required: true
         type: string
+        default: 'luci-theme-peditx'
       lan_ip:
         description: 'The LAN IP address'
         required: false
@@ -67,25 +69,25 @@ jobs:
       - name: 'Download and Extract OpenWrt ImageBuilder'
         id: download_ib
         run: |
-          TARGET_DIR_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}"
-          IMAGEBUILDER_FILENAME=$(curl -s "${TARGET_DIR_URL}/" | grep -o 'href="[^"]*imagebuilder[^"]*\.tar\.\(xz\|zst\)"' | head -n 1 | sed 's/href="//;s/"//')
-          if [ -z "$IMAGEBUILDER_FILENAME" ]; then
-            echo "::error::Could not automatically find the ImageBuilder filename."
-            exit 1
-          fi
-          echo "IMAGEBUILDER_FILENAME=${IMAGEBUILDER_FILENAME}" >> $GITHUB_OUTPUT
-          IMAGEBUILDER_URL="${TARGET_DIR_URL}/${IMAGEBUILDER_FILENAME}"
+          # از URL ثابت و قابل اعتماد استفاده کنید
+          TARGET_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}/"
+          IMAGEBUILDER_NAME="openwrt-imagebuilder-${{ github.event.inputs.openwrt_version }}-${{ github.event.inputs.device_target }}.tar.xz"
+          IMAGEBUILDER_URL="${TARGET_URL}${IMAGEBUILDER_NAME}"
+          echo "IMAGEBUILDER_URL=${IMAGEBUILDER_URL}"
+
+          echo "Downloading ImageBuilder..."
           wget "${IMAGEBUILDER_URL}"
+          
+          echo "Extracting ImageBuilder..."
           mkdir imagebuilder
-          tar -xf "${IMAGEBUILDER_FILENAME}" --strip-components=1 -C imagebuilder
+          tar -xf "${IMAGEBUILDER_NAME}" --strip-components=1 -C imagebuilder
 
       - name: 'Prepare ImageBuilder Environment'
         run: |
           IMAGEBUILDER_DIR="imagebuilder"
           echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> $GITHUB_ENV
-          TARGET_ARCH="${{ github.event.inputs.target_arch }}"
-          echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
           REPO_CONF_FILE="${IMAGEBUILDER_DIR}/repositories.conf"
+          # غیرفعال کردن چک امضا برای جلوگیری از مشکلات با بسته های سفارشی
           sed -i 's/^option check_signature.*/option check_signature 0/' "${REPO_CONF_FILE}"
           echo "--- Signature check disabled ---"
 
@@ -127,7 +129,7 @@ jobs:
             echo "--> Downloading main package and dependency bundle for ${PASSWALL_REPO}..."
             download_latest_ipk "${PASSWALL_REPO}"
             API_URL="https://api.github.com/repos/peditx/${PASSWALL_REPO}/releases/latest"
-            ZIP_FILENAME="passwall_packages_ipk_${{ env.TARGET_ARCH }}.zip"
+            ZIP_FILENAME="passwall_packages_ipk_${{ github.event.inputs.target_arch }}.zip"
             ZIP_URL=$(curl -sL "$API_URL" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
             if [ -n "$ZIP_URL" ]; then
               wget -q "${ZIP_URL}" -O dependencies.zip
@@ -181,7 +183,7 @@ jobs:
         id: organize_files
         run: |
           cd "${{ github.workspace }}/output"
-          if [ -z "$(ls -A .)" ]; then 
+          if [ -z "$(ls -A .)" ]; then  
             echo "::error::Build failed, no files were generated."
             exit 1
           fi
@@ -212,7 +214,7 @@ jobs:
             "${{ github.workspace }}/output/" \
             "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
           echo "Upload complete."
-
+      
       - name: 'Setup Node.js'
         uses: actions/setup-node@v4
         with:
