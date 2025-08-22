@@ -241,8 +241,8 @@ jobs:
           
           REMOTE_DIR="/home/frs/project/${SF_PROJECT_NAME}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/"
           
-          # MODIFIED: Create the full remote directory path before uploading
-          ssh -i ~/.ssh/id_rsa -o IdentitiesOnly=yes "${SF_USERNAME}@frs.sourceforge.net" "mkdir -p ${REMOTE_DIR}"
+          # MODIFIED: Added -T to disable pseudo-terminal allocation for the restricted shell
+          ssh -T -i ~/.ssh/id_rsa -o IdentitiesOnly=yes "${SF_USERNAME}@frs.sourceforge.net" "mkdir -p ${REMOTE_DIR}"
           
           rsync -avz --progress -e "ssh -i ~/.ssh/id_rsa -o IdentitiesOnly=yes" \
             "${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}" \
