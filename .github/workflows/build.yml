@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Corrected Version with Robust JSON Payload)
+# .github/workflows/build.yml (Final Corrected Version with conditional rootfs size)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -63,6 +63,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip
+
+      - name: 'Authenticate to Google Cloud'
+        id: 'auth'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
         id: download_ib
@@ -167,10 +173,22 @@ jobs:
           ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap -dnsmasq ${{ github.event.inputs.theme_choice }} ${{ github.event.inputs.extra_packages }}"
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
-          make image PROFILE="${{ github.event.inputs.device_profile }}" \
-            PACKAGES="${ALL_PACKAGES}" \
-            FILES="${{ github.workspace }}/files" \
-            BIN_DIR="${{ github.workspace }}/output" V=s
+          
+          # MODIFIED: Conditionally add rootfs partsize for x86 targets
+          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
+            echo "x86 target detected. Increasing rootfs partition size."
+            make image PROFILE="${{ github.event.inputs.device_profile }}" \
+              PACKAGES="${ALL_PACKAGES}" \
+              FILES="${{ github.workspace }}/files" \
+              BIN_DIR="${{ github.workspace }}/output" \
+              CONFIG_TARGET_ROOTFS_PARTSIZE=256 V=s
+          else
+            echo "Non-x86 target detected. Building with default rootfs size."
+            make image PROFILE="${{ github.event.inputs.device_profile }}" \
+              PACKAGES="${ALL_PACKAGES}" \
+              FILES="${{ github.workspace }}/files" \
+              BIN_DIR="${{ github.workspace }}/output" V=s
+          fi
 
       - name: 'Upload build logs on failure'
         if: failure() && steps.build_image.outcome == 'failure'
@@ -222,12 +240,6 @@ jobs:
           rm -f ~/.ssh/id_rsa
           echo "Upload complete."
 
-      - name: 'Authenticate to Google Cloud'
-        id: 'auth'
-        uses: 'google-github-actions/auth@v2'
-        with:
-          credentials_json: '${{ secrets.GCP_SA_KEY }}'
-
       - name: 'Report Success to Firestore'
         if: success()
         run: |
@@ -236,7 +248,6 @@ jobs:
           PROJECT_ID="${{ steps.auth.outputs.project_id }}"
           DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download"
           
-          # MODIFIED: Construct JSON payload in a variable to avoid here-document issues
           JSON_PAYLOAD=$(cat <<EOF
           {
             "fields": {
@@ -262,7 +273,6 @@ jobs:
           ACCESS_TOKEN=$(gcloud auth print-access-token)
           PROJECT_ID="${{ steps.auth.outputs.project_id }}"
 
-          # MODIFIED: Construct JSON payload in a variable to avoid here-document issues
           JSON_PAYLOAD=$(cat <<EOF
           {
             "fields": {
