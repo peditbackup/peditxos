@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Corrected Version with Diagnostics)
+# .github/workflows/build.yml (Final Version using Node.js and Google Cloud Library)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -171,9 +171,8 @@ jobs:
             FILES="${{ github.workspace }}/files" \
             BIN_DIR="${{ github.workspace }}/output" V=s
 
-      # <<< NEW DIAGNOSTIC STEP
       - name: 'List Output Directory Contents'
-        if: always() # This step runs even if the build fails
+        if: always()
         run: |
           echo "--- Listing contents of output directory ---"
           ls -R ${{ github.workspace }}/output
@@ -214,29 +213,44 @@ jobs:
             "${SF_USERNAME}@frs.sourceforge.net:${REMOTE_DIR}"
           echo "Upload complete."
 
-      - name: 'Authenticate to Google Cloud'
-        id: 'auth'
-        uses: 'google-github-actions/auth@v2'
+      # <<< MODIFIED: Switched to a Node.js script for reliability
+      - name: 'Setup Node.js'
+        uses: actions/setup-node@v4
         with:
-          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+          node-version: '20'
 
-      - name: 'Set up Cloud SDK'
-        uses: 'google-github-actions/setup-gcloud@v2'
-
-      - name: 'Install gcloud beta components'
-        run: gcloud components install beta --quiet
+      - name: 'Install Firestore Library'
+        run: npm install @google-cloud/firestore
 
       - name: 'Report Success to Firestore'
-        run: |
-          # MODIFIED: Added 'beta' back to the command
-          gcloud beta firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
-            --update-fields=status="completed",downloadUrl="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download" \
-            --project=${{ steps.auth.outputs.project_id }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { Firestore } = require('@google-cloud/firestore');
+            const firestore = new Firestore({
+              projectId: 'peditxos',
+              credentials: JSON.parse('${{ secrets.GCP_SA_KEY }}')
+            });
+            const docRef = firestore.doc('users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}');
+            await docRef.update({
+              status: 'completed',
+              downloadUrl: 'https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download'
+            });
+            console.log('Successfully updated Firestore document with status: completed');
 
       - name: 'Report Failure to Firestore'
         if: failure()
-        run: |
-          # MODIFIED: Added 'beta' back to the command
-          gcloud beta firestore documents update "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
-            --update-fields=status="failed",downloadUrl="" \
-            --project=${{ steps.auth.outputs.project_id }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { Firestore } = require('@google-cloud/firestore');
+            const firestore = new Firestore({
+              projectId: 'peditxos',
+              credentials: JSON.parse('${{ secrets.GCP_SA_KEY }}')
+            });
+            const docRef = firestore.doc('users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}');
+            await docRef.update({
+              status: 'failed',
+              downloadUrl: null
+            });
+            console.log('Successfully updated Firestore document with status: failed');
