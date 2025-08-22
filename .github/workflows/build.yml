@@ -229,24 +229,69 @@ jobs:
       - name: 'Set up Cloud SDK'
         uses: 'google-github-actions/setup-gcloud@v2'
 
-      # --- Report Success to Firestore (inline, no external script) ---
+      # --- Report Success to Firestore (using Firestore REST API) ---
       - name: 'Report Success to Firestore'
         if: success()
         run: |
           echo "--> Updating Firestore (success)..."
-          gcloud firestore documents update \
-            "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
-            --project="${{ steps.auth.outputs.project_id }}" \
-            --update-fields="status=completed,downloadUrl=https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/${{ github.event.inputs.openwrt_version }}/${{ github.event.inputs.device_profile }}/${{ steps.organize_files.outputs.RENAMED_FILE }}/download" \
-            --quiet
+          # Get access token from gcloud CLI
+          ACCESS_TOKEN=$(gcloud auth print-access-token)
+          PROJECT_ID="${{ steps.auth.outputs.project_id }}"
+          USER_ID="${{ github.event.inputs.user_id }}"
+          BUILD_ID="${{ github.event.inputs.build_id }}"
+          RENAMED_FILE="${{ steps.organize_files.outputs.RENAMED_FILE }}"
+          SF_PROJECT_NAME="${{ secrets.SF_PROJECT_NAME }}"
+          OPENWRT_VERSION="${{ github.event.inputs.openwrt_version }}"
+          DEVICE_PROFILE="${{ github.event.inputs.device_profile }}"
+          
+          # Construct the download URL
+          DOWNLOAD_URL="https://sourceforge.net/projects/${SF_PROJECT_NAME}/files/${OPENWRT_VERSION}/${DEVICE_PROFILE}/${RENAMED_FILE}/download"
 
-      # --- Report Failure to Firestore (inline, no external script) ---
+          # Use curl with a PATCH request to update the document.
+          # We use updateMask to only update the specified fields.
+          curl -X PATCH \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${USER_ID}/builds/${BUILD_ID}?updateMask.fieldPaths=status,downloadUrl" \
+            --data-binary "{
+              \"fields\": {
+                \"status\": {
+                  \"stringValue\": \"completed\"
+                },
+                \"downloadUrl\": {
+                  \"stringValue\": \"${DOWNLOAD_URL}\"
+                }
+              }
+            }"
+          
+          echo "Firestore update successful."
+
+      # --- Report Failure to Firestore (using Firestore REST API) ---
       - name: 'Report Failure to Firestore'
         if: failure()
         run: |
           echo "--> Updating Firestore (failure)..."
-          gcloud firestore documents update \
-            "users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}" \
-            --project="${{ steps.auth.outputs.project_id }}" \
-            --update-fields="status=failed,downloadUrl=null" \
-            --quiet
+          # Get access token from gcloud CLI
+          ACCESS_TOKEN=$(gcloud auth print-access-token)
+          PROJECT_ID="${{ steps.auth.outputs.project_id }}"
+          USER_ID="${{ github.event.inputs.user_id }}"
+          BUILD_ID="${{ github.event.inputs.build_id }}"
+          
+          # Use curl with a PATCH request to update the document.
+          # We use updateMask to only update the specified fields.
+          curl -X PATCH \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${USER_ID}/builds/${BUILD_ID}?updateMask.fieldPaths=status,downloadUrl" \
+            --data-binary "{
+              \"fields\": {
+                \"status\": {
+                  \"stringValue\": \"failed\"
+                },
+                \"downloadUrl\": {
+                  \"nullValue\": null
+                }
+              }
+            }"
+            
+          echo "Firestore update successful."
