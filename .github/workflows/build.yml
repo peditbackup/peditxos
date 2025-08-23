@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version with all requested fixes)
+# .github/workflows/build.yml (Final Version with architecture-aware package download)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -109,17 +109,13 @@ jobs:
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
           
-          # Extract theme name from package name (e.g., luci-theme-peditx -> peditx)
           THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
 
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
-          
-          # Set default theme
           echo "set luci.main.mediaurlbase='/luci-static/${THEME_NAME}'" >> "${UCI_SCRIPT_PATH}"
           
-          # Configure LAN IP and DHCP server
           if [ -n "${{ github.event.inputs.lan_ip }}" ]; then
             echo "set network.lan.ipaddr='${{ github.event.inputs.lan_ip }}'" >> "${UCI_SCRIPT_PATH}"
             echo "set network.lan.proto='static'" >> "${UCI_SCRIPT_PATH}"
@@ -128,7 +124,6 @@ jobs:
             echo "set dhcp.lan.leasetime='12h'" >> "${UCI_SCRIPT_PATH}"
           fi
 
-          # Configure WiFi status
           if [ "${{ github.event.inputs.wifi_24_enabled }}" = "true" ]; then
             echo "set wireless.radio0.disabled='0'" >> "${UCI_SCRIPT_PATH}"
           else
@@ -145,6 +140,10 @@ jobs:
         run: |
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
+          
+          # --- Download Theme Packages ---
+          echo "--> Downloading standard theme packages..."
+          # This generic function works for packages that don't have architecture-specific builds
           download_latest_ipk() {
             local REPO_NAME="$1"
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
@@ -155,12 +154,45 @@ jobs:
                 wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
                 echo "--> Successfully downloaded ${REPO_NAME}"
               else
-                echo "::warning::Found a release for ${REPO_NAME}, but no .ipk file was found in the assets."
+                echo "::warning::Found a release for ${REPO_NAME}, but no .ipk file was found."
               fi
             else
-              echo "::warning::Could not find a valid release or assets for ${REPO_NAME}. Skipping."
+              echo "::warning::Could not find a valid release for ${REPO_NAME}. Skipping."
             fi
           }
+          download_latest_ipk "luci-theme-peditx"
+          download_latest_ipk "luci-theme-carbonpx"
+
+          # --- Special handling for luci-app-themeswitch ---
+          echo "--> Downloading luci-app-themeswitch with architecture detection..."
+          THEMESWITCH_API_URL="https://api.github.com/repos/peditx/luci-app-themeswitch/releases/latest"
+          THEMESWITCH_API_RESPONSE=$(curl -sL "$THEMESWITCH_API_URL")
+          LATEST_VERSION=$(echo "${THEMESWITCH_API_RESPONSE}" | jq -r '.tag_name')
+
+          if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" == "null" ]; then
+            echo "::warning::Could not determine latest version for luci-app-themeswitch. Skipping."
+          else
+            echo "    Latest version found: ${LATEST_VERSION}"
+            cd "${{ env.IMAGEBUILDER_DIR }}"
+            # Use the target_arch provided by the user, which is reliable
+            PKG_ARCH="${{ github.event.inputs.target_arch }}"
+            cd "${{ github.workspace }}"
+            echo "    Using target architecture: ${PKG_ARCH}"
+            
+            PKG_NAME="luci-app-themeswitch_${LATEST_VERSION}_${PKG_ARCH}.ipk"
+            PKG_URL="https://github.com/peditx/luci-app-themeswitch/releases/download/${LATEST_VERSION}/${PKG_NAME}"
+            
+            echo "    Attempting to download from: ${PKG_URL}"
+            wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}"
+            
+            if [ -f "${CUSTOM_PKG_DIR}/${PKG_NAME}" ]; then
+              echo "--> Successfully downloaded luci-app-themeswitch."
+            else
+              echo "::warning::Failed to download luci-app-themeswitch. The file was not found at the constructed URL. The build will continue without it."
+            fi
+          fi
+          
+          # --- Download Passwall and other optional packages ---
           download_passwall_bundle() {
             local PASSWALL_REPO="$1"
             echo "--> Attempting to download main package and dependency bundle for ${PASSWALL_REPO}..."
@@ -182,12 +214,6 @@ jobs:
                echo "::warning::Could not find a valid release to download dependency bundle for ${PASSWALL_REPO}. Skipping."
             fi
           }
-          
-          # Mandatorily download all theme-related packages
-          download_latest_ipk "luci-theme-peditx"
-          download_latest_ipk "luci-theme-carbonpx"
-          download_latest_ipk "luci-app-themeswitch"
-
           DOWNLOAD_V1="false"
           DOWNLOAD_V2="false"
           for pkg in ${{ github.event.inputs.extra_packages }}; do
@@ -210,7 +236,6 @@ jobs:
         run: |
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
-          # MODIFIED: Mandatorily include theme packages and remove bootstrap
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
           ALL_PACKAGES="${BASE_PACKAGES} -luci-theme-bootstrap -dnsmasq ${{ github.event.inputs.extra_packages }}"
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
