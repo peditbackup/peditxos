@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version with architecture-aware package download)
+# .github/workflows/build.yml (Final Version with corrected firmware versioning)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -97,13 +97,6 @@ jobs:
 
       - name: 'Generate Custom Scripts and Settings'
         run: |
-          # --- Create Custom Banner ---
-          BANNER_FILE="${{ github.workspace }}/files/etc/banner"
-          mkdir -p "$(dirname "$BANNER_FILE")"
-          echo "PeDitXOS(${{ github.event.inputs.openwrt_version }}) / Telegram: https://t.me/peditx" > "$BANNER_FILE"
-          echo "--- Custom banner created ---"
-          cat "$BANNER_FILE"
-
           # --- Create Custom UCI Defaults Script ---
           UCI_SCRIPT_DIR="${{ github.workspace }}/files/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
@@ -112,6 +105,12 @@ jobs:
           THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
 
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
+          
+          # MODIFIED: Use sed to correctly modify the firmware version and description
+          echo "sed -i 's/DISTRIB_ID=.*/DISTRIB_ID=\"PeDitXOS (${{ github.event.inputs.openwrt_version }})\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
+          echo "sed -i 's/DISTRIB_DESCRIPTION=.*/DISTRIB_DESCRIPTION=\"PeDitXOS Telegram: @peditx\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
+
+          # --- Add other UCI settings ---
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
           echo "set luci.main.mediaurlbase='/luci-static/${THEME_NAME}'" >> "${UCI_SCRIPT_PATH}"
@@ -141,9 +140,6 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # --- Download Theme Packages ---
-          echo "--> Downloading standard theme packages..."
-          # This generic function works for packages that don't have architecture-specific builds
           download_latest_ipk() {
             local REPO_NAME="$1"
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
@@ -160,10 +156,7 @@ jobs:
               echo "::warning::Could not find a valid release for ${REPO_NAME}. Skipping."
             fi
           }
-          download_latest_ipk "luci-theme-peditx"
-          download_latest_ipk "luci-theme-carbonpx"
-
-          # --- Special handling for luci-app-themeswitch ---
+          
           echo "--> Downloading luci-app-themeswitch with architecture detection..."
           THEMESWITCH_API_URL="https://api.github.com/repos/peditx/luci-app-themeswitch/releases/latest"
           THEMESWITCH_API_RESPONSE=$(curl -sL "$THEMESWITCH_API_URL")
@@ -173,10 +166,7 @@ jobs:
             echo "::warning::Could not determine latest version for luci-app-themeswitch. Skipping."
           else
             echo "    Latest version found: ${LATEST_VERSION}"
-            cd "${{ env.IMAGEBUILDER_DIR }}"
-            # Use the target_arch provided by the user, which is reliable
             PKG_ARCH="${{ github.event.inputs.target_arch }}"
-            cd "${{ github.workspace }}"
             echo "    Using target architecture: ${PKG_ARCH}"
             
             PKG_NAME="luci-app-themeswitch_${LATEST_VERSION}_${PKG_ARCH}.ipk"
@@ -192,7 +182,9 @@ jobs:
             fi
           fi
           
-          # --- Download Passwall and other optional packages ---
+          download_latest_ipk "luci-theme-peditx"
+          download_latest_ipk "luci-theme-carbonpx"
+
           download_passwall_bundle() {
             local PASSWALL_REPO="$1"
             echo "--> Attempting to download main package and dependency bundle for ${PASSWALL_REPO}..."
