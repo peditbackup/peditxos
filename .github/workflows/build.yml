@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version with corrected firmware versioning)
+# .github/workflows/build.yml (Final Version with expanded logic for SBCs)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -105,10 +105,7 @@ jobs:
 
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
-          # MODIFIED: Correctly modify the firmware version fields
-          # This sets the main version string seen on the LuCI Status page
           echo "sed -i 's/DISTRIB_RELEASE=.*/DISTRIB_RELEASE=\"PeDitXOS (${{ github.event.inputs.openwrt_version }})\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
-          # This sets the description, often used in the terminal banner
           echo "sed -i 's/DISTRIB_DESCRIPTION=.*/DISTRIB_DESCRIPTION=\"PeDitXOS Telegram: @peditx\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
 
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
