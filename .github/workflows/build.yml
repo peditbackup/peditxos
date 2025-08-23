@@ -97,7 +97,6 @@ jobs:
 
       - name: 'Generate Custom Scripts and Settings'
         run: |
-          # --- Create Custom UCI Defaults Script ---
           UCI_SCRIPT_DIR="${{ github.workspace }}/files/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
@@ -106,11 +105,12 @@ jobs:
 
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
-          # MODIFIED: Use sed to correctly modify the firmware version and description
-          echo "sed -i 's/DISTRIB_ID=.*/DISTRIB_ID=\"PeDitXOS (${{ github.event.inputs.openwrt_version }})\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
+          # MODIFIED: Correctly modify the firmware version fields
+          # This sets the main version string seen on the LuCI Status page
+          echo "sed -i 's/DISTRIB_RELEASE=.*/DISTRIB_RELEASE=\"PeDitXOS (${{ github.event.inputs.openwrt_version }})\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
+          # This sets the description, often used in the terminal banner
           echo "sed -i 's/DISTRIB_DESCRIPTION=.*/DISTRIB_DESCRIPTION=\"PeDitXOS Telegram: @peditx\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
 
-          # --- Add other UCI settings ---
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
           echo "set luci.main.mediaurlbase='/luci-static/${THEME_NAME}'" >> "${UCI_SCRIPT_PATH}"
@@ -233,15 +233,15 @@ jobs:
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
           
-          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
-            echo "x86 target detected. Increasing rootfs partition size to 512MB."
+          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" || "${{ github.event.inputs.device_target }}" == "rockchip/armv8" ]]; then
+            echo "SBC target detected. Increasing rootfs partition size to 512MB."
             make image PROFILE="${{ github.event.inputs.device_profile }}" \
               PACKAGES="${ALL_PACKAGES}" \
               FILES="${{ github.workspace }}/files" \
               BIN_DIR="${{ github.workspace }}/output" \
               CONFIG_TARGET_ROOTFS_PARTSIZE=512 V=s
           else
-            echo "Non-x86 target detected. Building with default rootfs size."
+            echo "Non-SBC target detected. Building with default rootfs size."
             make image PROFILE="${{ github.event.inputs.device_profile }}" \
               PACKAGES="${ALL_PACKAGES}" \
               FILES="${{ github.workspace }}/files" \
