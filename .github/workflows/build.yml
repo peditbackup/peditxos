@@ -97,25 +97,23 @@ jobs:
         id: sbc_check
         run: |
           IS_SBC="false"
-          # x86 is always treated as an SBC
+          # First, always treat x86 as an SBC
           if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
             IS_SBC="true"
           else
+            # Stage 1: Check IMAGE_SIZE from Makefile for a reliable detection
             echo "Checking profile configuration for: ${{ github.event.inputs.device_profile }}"
             MAKEFILE_PATH=$(find ${{ env.IMAGEBUILDER_DIR }}/target/linux -type f -name 'Makefile' | head -n 1)
 
             if [ -z "$MAKEFILE_PATH" ]; then
-              echo "::warning::Could not find target Makefile to check for image size. Building with default rootfs size."
+              echo "::warning::Could not find target Makefile. Will rely on profile name check."
             else
-              # Extract the specific device block from the Makefile and get the IMAGE_SIZE value
               DEVICE_BLOCK=$(sed -n "/define Device\/${{ github.event.inputs.device_profile }}/,/endef/p" "$MAKEFILE_PATH")
               IMAGE_SIZE_RAW=$(echo "$DEVICE_BLOCK" | grep -o 'IMAGE_SIZE :=.*' | cut -d' ' -f3)
-
               echo "Found raw IMAGE_SIZE value: '${IMAGE_SIZE_RAW}'"
 
               if [ -n "$IMAGE_SIZE_RAW" ]; then
                 SIZE_MB=0
-                # Check for unit (k, M, G) and convert to MB
                 if [[ "$IMAGE_SIZE_RAW" == *k ]]; then
                   SIZE_KB=${IMAGE_SIZE_RAW//k/}
                   SIZE_MB=$((SIZE_KB / 1024))
@@ -125,19 +123,25 @@ jobs:
                   SIZE_GB=${IMAGE_SIZE_RAW//G/}
                   SIZE_MB=$((SIZE_GB * 1024))
                 else
-                  if [[ "$IMAGE_SIZE_RAW" -gt 1000000 ]]; then # Check if value is likely in bytes
+                  if [[ "$IMAGE_SIZE_RAW" -gt 1000000 ]]; then
                     SIZE_MB=$((IMAGE_SIZE_RAW / 1024 / 1024))
-                  else # Assume value is already in MB for some SBC profiles
+                  else
                     SIZE_MB=$IMAGE_SIZE_RAW
                   fi
                 fi
-                
                 echo "Calculated default image size is approximately: ${SIZE_MB}MB"
-                
-                # If the default defined image size is > 256MB, we assume it's an SBC
                 if [ "$SIZE_MB" -gt 256 ]; then
                   IS_SBC="true"
                 fi
+              fi
+            fi
+            
+            # Stage 2 (Fallback): If size check didn't confirm, check profile name for keywords
+            if [ "$IS_SBC" == "false" ]; then
+              echo "IMAGE_SIZE check did not confirm SBC. Falling back to profile name check."
+              if echo "${{ github.event.inputs.device_profile }}" | grep -Eq 'nanopi|raspberry|rpi|rockpro|rockpi|orange|banana|x86'; then
+                echo "Profile name contains SBC keyword. Treating as SBC."
+                IS_SBC="true"
               fi
             fi
           fi
@@ -190,6 +194,7 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
+          # Downloads the latest .ipk file from a given GitHub repo release
           download_latest_ipk() {
             local REPO_NAME="$1"
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
@@ -206,7 +211,35 @@ jobs:
               echo "::warning::Could not find a valid release for ${REPO_NAME}. Skipping."
             fi
           }
+
+          # Downloads the main passwall app and its dependency bundle for the target architecture
+          download_passwall_bundle() {
+            local PASSWALL_REPO="$1"
+            echo "--> Attempting to download main package and dependency bundle for ${PASSWALL_REPO}..."
+            download_latest_ipk "${PASSWALL_REPO}" # Download the main .ipk
+            
+            local API_URL="https://api.github.com/repos/peditx/${PASSWALL_REPO}/releases/latest"
+            local API_RESPONSE=$(curl -sL "$API_URL")
+            if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
+              # Flexibly search for a zip file containing the target architecture
+              local ARCH_TAG="${{ env.TARGET_ARCH }}"
+              local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg ARCH "${ARCH_TAG}" '.assets[] | select(.name | endswith(".zip") and contains($ARCH)) | .browser_download_url' | head -n 1)
+              
+              if [ -n "$ZIP_URL" ]; then
+                echo "Found dependency bundle: ${ZIP_URL}"
+                wget -q "${ZIP_URL}" -O dependencies.zip
+                unzip -o dependencies.zip -d "${CUSTOM_PKG_DIR}"
+                rm dependencies.zip
+                echo "--> Successfully downloaded and extracted dependency bundle for ${PASSWALL_REPO}"
+              else
+                echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO} and architecture ${ARCH_TAG}."
+              fi
+            else
+               echo "::warning::Could not find a valid release to download dependency bundle for ${PASSWALL_REPO}. Skipping."
+            fi
+          }
           
+          # --- Download Standard Packages ---
           echo "--> Downloading luci-app-themeswitch with architecture detection..."
           THEMESWITCH_API_URL="https://api.github.com/repos/peditx/luci-app-themeswitch/releases/latest"
           THEMESWITCH_API_RESPONSE=$(curl -sL "$THEMESWITCH_API_URL")
@@ -235,41 +268,11 @@ jobs:
           download_latest_ipk "luci-theme-peditx"
           download_latest_ipk "luci-theme-carbonpx"
 
-          download_passwall_bundle() {
-            local PASSWALL_REPO="$1"
-            echo "--> Attempting to download main package and dependency bundle for ${PASSWALL_REPO}..."
-            download_latest_ipk "${PASSWALL_REPO}"
-            local API_URL="https://api.github.com/repos/peditx/${PASSWALL_REPO}/releases/latest"
-            local API_RESPONSE=$(curl -sL "$API_URL")
-            if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
-              local ZIP_FILENAME="passwall_packages_ipk_${{ env.TARGET_ARCH }}.zip"
-              local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
-              if [ -n "$ZIP_URL" ]; then
-                wget -q "${ZIP_URL}" -O dependencies.zip
-                unzip -o dependencies.zip -d "${CUSTOM_PKG_DIR}"
-                rm dependencies.zip
-                echo "--> Successfully downloaded dependency bundle for ${PASSWALL_REPO}"
-              else
-                echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO} and architecture ${{ env.TARGET_ARCH }}."
-              fi
-            else
-               echo "::warning::Could not find a valid release to download dependency bundle for ${PASSWALL_REPO}. Skipping."
-            fi
-          }
-          DOWNLOAD_V1="false"
-          DOWNLOAD_V2="false"
-          for pkg in ${{ github.event.inputs.extra_packages }}; do
-            if [[ "$pkg" == "luci-app-passwall" ]]; then
-              DOWNLOAD_V1="true"
-            fi
-            if [[ "$pkg" == "luci-app-passwall2" ]]; then
-              DOWNLOAD_V2="true"
-            fi
-          done
-          if [[ "$DOWNLOAD_V1" == "true" ]]; then
+          # --- Download Passwall if requested ---
+          if echo "${{ github.event.inputs.extra_packages }}" | grep -q "\bluci-app-passwall\b"; then
             download_passwall_bundle "openwrt-passwall"
           fi
-          if [[ "$DOWNLOAD_V2" == "true" ]]; then
+          if echo "${{ github.event.inputs.extra_packages }}" | grep -q "\bluci-app-passwall2\b"; then
             download_passwall_bundle "openwrt-passwall2"
           fi
       
