@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version, robust SBC profile detection)
+# .github/workflows/build.yml (Final Version, direct make command for robust RootFS sizing)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -249,9 +249,6 @@ jobs:
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
 
-          # Prepare base make command arguments
-          MAKE_ARGS="PROFILE='${{ github.event.inputs.device_profile }}' PACKAGES='${ALL_PACKAGES}' FILES='${{ github.workspace }}/files' BIN_DIR='${{ github.workspace }}/output' V=s"
-
           # Robustly determine if a larger RootFS is needed based on specific profile names
           NEEDS_LARGER_ROOTFS=false
           if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
@@ -259,22 +256,26 @@ jobs:
           fi
 
           case "${{ github.event.inputs.device_profile }}" in
-            # List of known SBC profiles that require a larger rootfs. This is safer than checking the target.
-            # Using wildcards to catch all variants.
+            # List of known SBC profiles that require a larger rootfs.
             *nanopi*|*bananapi*|*orangepi*|*rpi*)
               NEEDS_LARGER_ROOTFS=true
               ;;
           esac
 
           if [[ "$NEEDS_LARGER_ROOTFS" == "true" ]]; then
-            echo "SBC-like target or profile detected. Applying default size of 512MB."
-            MAKE_ARGS="${MAKE_ARGS} CONFIG_TARGET_ROOTFS_PARTSIZE=512"
+            echo "SBC-like target or profile detected. Applying size of 512MB."
+            make image PROFILE="${{ github.event.inputs.device_profile }}" \
+              PACKAGES="${ALL_PACKAGES}" \
+              FILES="${{ github.workspace }}/files" \
+              BIN_DIR="${{ github.workspace }}/output" \
+              CONFIG_TARGET_ROOTFS_PARTSIZE=512 V=s
           else
             echo "Using default RootFS size for the profile."
+            make image PROFILE="${{ github.event.inputs.device_profile }}" \
+              PACKAGES="${ALL_PACKAGES}" \
+              FILES="${{ github.workspace }}/files" \
+              BIN_DIR="${{ github.workspace }}/output" V=s
           fi
-          
-          # Execute the final make command
-          eval make image ${MAKE_ARGS}
 
       - name: 'Upload build logs on failure'
         if: failure() && steps.build_image.outcome == 'failure'
