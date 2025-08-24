@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version with correct branding and all fixes)
+# .github/workflows/build.yml (Final Version with custom repo and selective theme install)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -103,11 +103,23 @@ jobs:
           
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
-          # --- Modify /etc/openwrt_release (for About page) ---
+          # --- Add Custom opkg Repository ---
+          echo "# Add new opkg key" >> "${UCI_SCRIPT_PATH}"
+          echo "wget -O /tmp/passwall.pub https://repo.peditxdl.ir/passwall-packages/passwall.pub" >> "${UCI_SCRIPT_PATH}"
+          echo "opkg-key add /tmp/passwall.pub" >> "${UCI_SCRIPT_PATH}"
+          echo "rm /tmp/passwall.pub" >> "${UCI_SCRIPT_PATH}"
+          echo "# Add opkg repository" >> "${UCI_SCRIPT_PATH}"
+          echo "read release arch << EOF" >> "${UCI_SCRIPT_PATH}"
+          echo "\$(. /etc/openwrt_release ; echo \${DISTRIB_RELEASE%.*} \$DISTRIB_ARCH)" >> "${UCI_SCRIPT_PATH}"
+          echo "EOF" >> "${UCI_SCRIPT_PATH}"
+          echo "for feed in passwall_luci passwall_packages passwall2; do" >> "${UCI_SCRIPT_PATH}"
+          echo "  echo \"src/gz \$feed https://repo.peditxdl.ir/passwall-packages/releases/packages-\$release/\$arch/\$feed\" >> /etc/opkg/customfeeds.conf" >> "${UCI_SCRIPT_PATH}"
+          echo "done" >> "${UCI_SCRIPT_PATH}"
+          echo "" >> "${UCI_SCRIPT_PATH}"
+
+          # --- Modify Release Info for Branding ---
           echo "sed -i 's/DISTRIB_RELEASE=.*/DISTRIB_RELEASE=\"PeDitXOS (${{ github.event.inputs.openwrt_version }})\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
           echo "sed -i 's/DISTRIB_DESCRIPTION=.*/DISTRIB_DESCRIPTION=\"PeDitXOS Telegram: @peditx\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
-
-          # --- Modify /etc/os-release (for LuCI Status page) ---
           echo "sed -i 's/^NAME=.*/NAME=\"PeDitXOS\"/' /etc/os-release" >> "${UCI_SCRIPT_PATH}"
           echo "sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME=\"PeDitXOS (${{ github.event.inputs.openwrt_version }})\"/' /etc/os-release" >> "${UCI_SCRIPT_PATH}"
 
@@ -134,7 +146,7 @@ jobs:
           echo "EOF" >> "${UCI_SCRIPT_PATH}"
           
           chmod +x "${UCI_SCRIPT_PATH}"
-          echo "--- Custom settings and branding script generated ---"
+          echo "--- Custom settings, branding, and repo script generated ---"
           cat "${UCI_SCRIPT_PATH}"
 
       - name: 'Download Custom IPK Packages'
@@ -144,6 +156,8 @@ jobs:
           
           download_latest_ipk() {
             local REPO_NAME="$1"
+            # Handle empty input
+            if [ -z "$REPO_NAME" ]; then return; fi
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
             local API_RESPONSE=$(curl -sL "$API_URL")
             if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
@@ -205,8 +219,8 @@ jobs:
             fi
           }
 
-          download_latest_ipk "luci-theme-peditx"
-          download_latest_ipk "luci-theme-carbonpx"
+          # Download only the selected theme and the themeswitch app
+          download_latest_ipk "${{ github.event.inputs.theme_choice }}"
           download_themeswitch
           
           for pkg in ${{ github.event.inputs.extra_packages }}; do
@@ -224,7 +238,8 @@ jobs:
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
           
-          THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
+          # Install only the selected theme and the themeswitch app
+          THEME_PACKAGES="${{ github.event.inputs.theme_choice }} luci-app-themeswitch"
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
           ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq ${{ github.event.inputs.extra_packages }}"
           
