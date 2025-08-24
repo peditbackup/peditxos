@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version, with separate logic for SBC package filtering and unified rootfs sizing)
+# .github/workflows/build.yml (Final Version, with correct pre-build branding and NTP hotplug fix)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -95,20 +95,51 @@ jobs:
           sed -i 's/^option check_signature.*/option check_signature 0/' "${REPO_CONF_FILE}"
           echo "--- Signature check disabled ---"
 
-      - name: 'Generate Custom UCI Defaults Script'
+      - name: 'Prepare Custom Files and Scripts'
         run: |
-          UCI_SCRIPT_DIR="${{ github.workspace }}/files/etc/uci-defaults"
+          FILES_DIR="${{ github.workspace }}/files"
+          IB_DIR="${{ env.IMAGEBUILDER_DIR }}"
+          
+          # --- Prepare Branding Files (pre-build) ---
+          mkdir -p "${FILES_DIR}/etc"
+          # Find the base-files directory dynamically
+          BASE_FILES_PATH=$(find "${IB_DIR}/target/linux/" -type d -name "base-files" | head -n 1)
+          if [ -z "$BASE_FILES_PATH" ]; then
+            echo "::error::Could not find base-files directory."
+            exit 1
+          fi
+          echo "Found base-files at: $BASE_FILES_PATH"
+          
+          cp "${BASE_FILES_PATH}/etc/openwrt_release" "${FILES_DIR}/etc/openwrt_release"
+          cp "${BASE_FILES_PATH}/etc/os-release" "${FILES_DIR}/etc/os-release"
+
+          sed -i "s/DISTRIB_RELEASE=.*/DISTRIB_RELEASE='PeDitXOS (${{ github.event.inputs.openwrt_version }})'/" "${FILES_DIR}/etc/openwrt_release"
+          sed -i "s/DISTRIB_DESCRIPTION=.*/DISTRIB_DESCRIPTION='PeDitXOS Telegram: @peditx'/" "${FILES_DIR}/etc/openwrt_release"
+          sed -i "s/^NAME=.*/NAME='PeDitXOS'/" "${FILES_DIR}/etc/os-release"
+          sed -i "s/^PRETTY_NAME=.*/PRETTY_NAME='PeDitXOS (${{ github.event.inputs.openwrt_version }})'/" "${FILES_DIR}/etc/os-release"
+          echo "--- Custom release files generated ---"
+
+          # --- Create NTP Hotplug Script ---
+          HOTPLUG_DIR="${FILES_DIR}/etc/hotplug.d/iface"
+          mkdir -p "${HOTPLUG_DIR}"
+          HOTPLUG_SCRIPT_PATH="${HOTPLUG_DIR}/99-ntp-sync"
+          echo "#!/bin/sh" > "${HOTPLUG_SCRIPT_PATH}"
+          echo "if [ \"\$ACTION\" = \"ifup\" ] && [ \"\$INTERFACE\" = \"wan\" ]; then" >> "${HOTPLUG_SCRIPT_PATH}"
+          echo "    (sleep 15; service sysntpd restart) &" >> "${HOTPLUG_SCRIPT_PATH}"
+          echo "fi" >> "${HOTPLUG_SCRIPT_PATH}"
+          chmod +x "${HOTPLUG_SCRIPT_PATH}"
+          echo "--- NTP hotplug script generated ---"
+
+          # --- Create UCI Defaults Script ---
+          UCI_SCRIPT_DIR="${FILES_DIR}/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
           
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
-          # --- Add Custom opkg Repository ---
-          echo "# Add new opkg key" >> "${UCI_SCRIPT_PATH}"
           echo "wget -O /tmp/passwall.pub https://repo.peditxdl.ir/passwall-packages/passwall.pub" >> "${UCI_SCRIPT_PATH}"
           echo "opkg-key add /tmp/passwall.pub" >> "${UCI_SCRIPT_PATH}"
           echo "rm /tmp/passwall.pub" >> "${UCI_SCRIPT_PATH}"
-          echo "# Add opkg repository" >> "${UCI_SCRIPT_PATH}"
           echo "read release arch << EOF" >> "${UCI_SCRIPT_PATH}"
           echo "\$(. /etc/openwrt_release ; echo \${DISTRIB_RELEASE%.*} \$DISTRIB_ARCH)" >> "${UCI_SCRIPT_PATH}"
           echo "EOF" >> "${UCI_SCRIPT_PATH}"
@@ -117,13 +148,6 @@ jobs:
           echo "done" >> "${UCI_SCRIPT_PATH}"
           echo "" >> "${UCI_SCRIPT_PATH}"
 
-          # --- Modify Release Info for Branding ---
-          echo "sed -i 's/DISTRIB_RELEASE=.*/DISTRIB_RELEASE=\"PeDitXOS (${{ github.event.inputs.openwrt_version }})\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
-          echo "sed -i 's/DISTRIB_DESCRIPTION=.*/DISTRIB_DESCRIPTION=\"PeDitXOS Telegram: @peditx\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
-          echo "sed -i 's/^NAME=.*/NAME=\"PeDitXOS\"/' /etc/os-release" >> "${UCI_SCRIPT_PATH}"
-          echo "sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME=\"PeDitXOS (${{ github.event.inputs.openwrt_version }})\"/' /etc/os-release" >> "${UCI_SCRIPT_PATH}"
-
-          # --- UCI settings ---
           THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
@@ -144,13 +168,10 @@ jobs:
 
           echo "commit" >> "${UCI_SCRIPT_PATH}"
           echo "EOF" >> "${UCI_SCRIPT_PATH}"
-
-          # --- Reload services to apply all changes ---
           echo "/sbin/reload_config" >> "${UCI_SCRIPT_PATH}"
           
           chmod +x "${UCI_SCRIPT_PATH}"
-          echo "--- Custom settings, branding, and repo script generated ---"
-          cat "${UCI_SCRIPT_PATH}"
+          echo "--- Custom UCI script generated ---"
 
       - name: 'Download Custom IPK Packages'
         run: |
