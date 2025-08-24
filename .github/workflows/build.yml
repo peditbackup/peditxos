@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version, installs both themes + themeswitch by default)
+# .github/workflows/build.yml (Final Version, robust SBC profile detection)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -252,16 +252,19 @@ jobs:
           # Prepare base make command arguments
           MAKE_ARGS="PROFILE='${{ github.event.inputs.device_profile }}' PACKAGES='${ALL_PACKAGES}' FILES='${{ github.workspace }}/files' BIN_DIR='${{ github.workspace }}/output' V=s"
 
-          # Smartly determine if a larger RootFS is needed based on profile name or target
+          # Robustly determine if a larger RootFS is needed based on specific profile names
           NEEDS_LARGER_ROOTFS=false
           if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
             NEEDS_LARGER_ROOTFS=true
           fi
 
-          # General rule for SBCs based on 'pi' in the profile name
-          if [[ "${{ github.event.inputs.device_profile }}" == *pi* ]]; then
-            NEEDS_LARGER_ROOTFS=true
-          fi
+          case "${{ github.event.inputs.device_profile }}" in
+            # List of known SBC profiles that require a larger rootfs. This is safer than checking the target.
+            # Using wildcards to catch all variants.
+            *nanopi*|*bananapi*|*orangepi*|*rpi*)
+              NEEDS_LARGER_ROOTFS=true
+              ;;
+          esac
 
           if [[ "$NEEDS_LARGER_ROOTFS" == "true" ]]; then
             echo "SBC-like target or profile detected. Applying default size of 512MB."
