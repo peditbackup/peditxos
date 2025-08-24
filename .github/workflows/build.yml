@@ -1,5 +1,3 @@
-# .github/workflows/build.yml (Final Version, with separate logic for SBC package filtering and x86 rootfs sizing)
-
 name: 'PeDitXOS Firmware Builder'
 
 on:
@@ -22,7 +20,7 @@ on:
         required: true
         type: string
       target_arch:
-        description: 'Target Architecture (e.g., x86_64, aarch64_cortex-a53)'
+        description: 'Target Architecture (e.g., x86_64, mipsel_24kc)'
         required: true
         type: string
       openwrt_version:
@@ -95,9 +93,32 @@ jobs:
           sed -i 's/^option check_signature.*/option check_signature 0/' "${REPO_CONF_FILE}"
           echo "--- Signature check disabled ---"
 
-      - name: 'Generate Custom UCI Defaults Script'
+      - name: 'Prepare Custom Files and Settings'
         run: |
-          UCI_SCRIPT_DIR="${{ github.workspace }}/files/etc/uci-defaults"
+          # --- Create directory for custom files ---
+          CUSTOM_FILES_DIR="${{ github.workspace }}/files"
+          ETC_DIR="${CUSTOM_FILES_DIR}/etc"
+          mkdir -p "${ETC_DIR}"
+
+          # --- Prepare branding files directly ---
+          echo "DISTRIB_RELEASE='PeDitXOS (${{ github.event.inputs.openwrt_version }})'" > "${ETC_DIR}/openwrt_release"
+          echo "DISTRIB_REVISION='R24.x'" >> "${ETC_DIR}/openwrt_release" # You can customize this
+          echo "DISTRIB_DESCRIPTION='PeDitXOS Telegram: @peditx'" >> "${ETC_DIR}/openwrt_release"
+          
+          echo "NAME='PeDitXOS'" > "${ETC_DIR}/os-release"
+          echo "VERSION='${{ github.event.inputs.openwrt_version }}'" >> "${ETC_DIR}/os-release"
+          echo "ID='peditxos'" >> "${ETC_DIR}/os-release"
+          echo "ID_LIKE='openwrt'" >> "${ETC_DIR}/os-release"
+          echo "PRETTY_NAME='PeDitXOS (${{ github.event.inputs.openwrt_version }})'" >> "${ETC_DIR}/os-release"
+          echo "VERSION_ID='${{ github.event.inputs.openwrt_version }}'" >> "${ETC_DIR}/os-release"
+          echo "HOME_URL='https://t.me/peditx'" >> "${ETC_DIR}/os-release"
+          echo "SUPPORT_URL='https://t.me/peditx'" >> "${ETC_DIR}/os-release"
+          echo "BUG_REPORT_URL='https://t.me/peditx'" >> "${ETC_DIR}/os-release"
+
+          echo "--- Branding files created ---"
+          
+          # --- Generate Custom UCI Defaults Script ---
+          UCI_SCRIPT_DIR="${CUSTOM_FILES_DIR}/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
           
@@ -116,12 +137,6 @@ jobs:
           echo "  echo \"src/gz \$feed https://repo.peditxdl.ir/passwall-packages/releases/packages-\$release/\$arch/\$feed\" >> /etc/opkg/customfeeds.conf" >> "${UCI_SCRIPT_PATH}"
           echo "done" >> "${UCI_SCRIPT_PATH}"
           echo "" >> "${UCI_SCRIPT_PATH}"
-
-          # --- Modify Release Info for Branding ---
-          echo "sed -i 's/DISTRIB_RELEASE=.*/DISTRIB_RELEASE=\"PeDitXOS (${{ github.event.inputs.openwrt_version }})\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
-          echo "sed -i 's/DISTRIB_DESCRIPTION=.*/DISTRIB_DESCRIPTION=\"PeDitXOS Telegram: @peditx\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
-          echo "sed -i 's/^NAME=.*/NAME=\"PeDitXOS\"/' /etc/os-release" >> "${UCI_SCRIPT_PATH}"
-          echo "sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME=\"PeDitXOS (${{ github.event.inputs.openwrt_version }})\"/' /etc/os-release" >> "${UCI_SCRIPT_PATH}"
 
           # --- UCI settings ---
           THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
@@ -144,13 +159,9 @@ jobs:
 
           echo "commit" >> "${UCI_SCRIPT_PATH}"
           echo "EOF" >> "${UCI_SCRIPT_PATH}"
-
-          # --- Reload services to apply all changes ---
-          echo "/sbin/reload_config" >> "${UCI_SCRIPT_PATH}"
           
           chmod +x "${UCI_SCRIPT_PATH}"
-          echo "--- Custom settings, branding, and repo script generated ---"
-          cat "${UCI_SCRIPT_PATH}"
+          echo "--- Custom settings script generated ---"
 
       - name: 'Download Custom IPK Packages'
         run: |
@@ -159,6 +170,7 @@ jobs:
           
           download_latest_ipk() {
             local REPO_NAME="$1"
+            # Handle empty input
             if [ -z "$REPO_NAME" ]; then return; fi
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
             local API_RESPONSE=$(curl -sL "$API_URL")
@@ -221,9 +233,8 @@ jobs:
             fi
           }
 
-          # Download both themes and the themeswitch app
-          download_latest_ipk "luci-theme-peditx"
-          download_latest_ipk "luci-theme-carbonpx"
+          # Download only the selected theme and the themeswitch app
+          download_latest_ipk "${{ github.event.inputs.theme_choice }}"
           download_themeswitch
           
           for pkg in ${{ github.event.inputs.extra_packages }}; do
@@ -234,59 +245,35 @@ jobs:
               download_passwall_bundle "openwrt-passwall2"
             fi
           done
-    
+   
       - name: 'Build Firmware Image'
         id: build_image
         run: |
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
           
-          # Determine if the target is a non-x86 SBC
-          IS_NON_X86_SBC=false
-          case "${{ github.event.inputs.device_profile }}" in
-            *nanopi*|*bananapi*|*orangepi*|*rpi*)
-              IS_NON_X86_SBC=true
-              ;;
-          esac
-
-          # Filter extra packages ONLY if it's a non-x86 SBC with too many heavy packages
-          FINAL_EXTRA_PACKAGES="${{ github.event.inputs.extra_packages }}"
-          if [[ "$IS_NON_X86_SBC" == "true" ]]; then
-            HEAVY_PKG_COUNT=0
-            for pkg in luci-app-passwall luci-app-passwall2 luci-app-wol luci-app-smartdns; do
-              if [[ " ${{ github.event.inputs.extra_packages }} " =~ " ${pkg} " ]]; then
-                HEAVY_PKG_COUNT=$((HEAVY_PKG_COUNT + 1))
-              fi
-            done
-            
-            if (( HEAVY_PKG_COUNT > 2 )); then
-              echo "::warning::More than 2 heavy packages selected for an SBC. Ignoring luci-app-wol and luci-app-smartdns to save space."
-              FINAL_EXTRA_PACKAGES=$(echo "$FINAL_EXTRA_PACKAGES" | sed 's/luci-app-wol//g' | sed 's/luci-app-smartdns//g')
-            fi
-          fi
-
-          # Install both themes and the themeswitch app
-          THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
+          # Install only the selected theme and the themeswitch app
+          THEME_PACKAGES="${{ github.event.inputs.theme_choice }} luci-app-themeswitch"
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
-          ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq ${FINAL_EXTRA_PACKAGES}"
+          ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq ${{ github.event.inputs.extra_packages }}"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
-
-          # Force the RootFS size ONLY for x86 targets
-          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
-            echo "x86 target detected. Forcing RootFS size to 512MB in .config"
-            sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
-            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
-          else
-            echo "Using default RootFS size for the profile."
-          fi
           
-          # Now, run the standard make command. It will pick up the .config change.
-          make image PROFILE="${{ github.event.inputs.device_profile }}" \
-            PACKAGES="${ALL_PACKAGES}" \
-            FILES="${{ github.workspace }}/files" \
-            BIN_DIR="${{ github.workspace }}/output" V=s
+          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
+            echo "x86 target detected. Increasing rootfs partition size to 512MB."
+            make image PROFILE="${{ github.event.inputs.device_profile }}" \
+              PACKAGES="${ALL_PACKAGES}" \
+              FILES="${{ github.workspace }}/files" \
+              BIN_DIR="${{ github.workspace }}/output" \
+              CONFIG_TARGET_ROOTFS_PARTSIZE=512 V=s
+          else
+            echo "Non-x86 target detected. Building with default rootfs size."
+            make image PROFILE="${{ github.event.inputs.device_profile }}" \
+              PACKAGES="${ALL_PACKAGES}" \
+              FILES="${{ github.workspace }}/files" \
+              BIN_DIR="${{ github.workspace }}/output" V=s
+          fi
 
       - name: 'Upload build logs on failure'
         if: failure() && steps.build_image.outcome == 'failure'
