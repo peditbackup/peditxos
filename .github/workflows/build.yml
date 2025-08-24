@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version, with smart package filtering for SBCs)
+# .github/workflows/build.yml (Final Version, with separate logic for SBC package filtering and x86 rootfs sizing)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -241,20 +241,17 @@ jobs:
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
           
-          # Determine if the target is an SBC
-          IS_SBC=false
-          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
-            IS_SBC=true
-          fi
+          # Determine if the target is a non-x86 SBC
+          IS_NON_X86_SBC=false
           case "${{ github.event.inputs.device_profile }}" in
             *nanopi*|*bananapi*|*orangepi*|*rpi*)
-              IS_SBC=true
+              IS_NON_X86_SBC=true
               ;;
           esac
 
-          # Filter extra packages if it's an SBC with too many heavy packages
+          # Filter extra packages ONLY if it's a non-x86 SBC with too many heavy packages
           FINAL_EXTRA_PACKAGES="${{ github.event.inputs.extra_packages }}"
-          if [[ "$IS_SBC" == "true" ]]; then
+          if [[ "$IS_NON_X86_SBC" == "true" ]]; then
             HEAVY_PKG_COUNT=0
             for pkg in luci-app-passwall luci-app-passwall2 luci-app-wol luci-app-smartdns; do
               if [[ " ${{ github.event.inputs.extra_packages }} " =~ " ${pkg} " ]]; then
@@ -276,9 +273,9 @@ jobs:
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
 
-          # Force the RootFS size by writing to the .config file if it's an SBC
-          if [[ "$IS_SBC" == "true" ]]; then
-            echo "SBC-like target or profile detected. Forcing RootFS size to 512MB in .config"
+          # Force the RootFS size ONLY for x86 targets
+          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
+            echo "x86 target detected. Forcing RootFS size to 512MB in .config"
             sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
             echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
           else
