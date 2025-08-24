@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version, uses smart 'pi' detection for SBCs)
+# .github/workflows/build.yml (Final Version, installs both themes + themeswitch by default)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -221,7 +221,9 @@ jobs:
             fi
           }
 
-          download_latest_ipk "${{ github.event.inputs.theme_choice }}"
+          # Download both themes and the themeswitch app
+          download_latest_ipk "luci-theme-peditx"
+          download_latest_ipk "luci-theme-carbonpx"
           download_themeswitch
           
           for pkg in ${{ github.event.inputs.extra_packages }}; do
@@ -239,7 +241,8 @@ jobs:
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
           
-          THEME_PACKAGES="${{ github.event.inputs.theme_choice }} luci-app-themeswitch"
+          # Install both themes and the themeswitch app
+          THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
           ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq ${{ github.event.inputs.extra_packages }}"
           
