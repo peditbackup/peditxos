@@ -1,0 +1,404 @@
+# .github/workflows/build.yml (Final Version, uses smart 'pi' detection for SBCs)
+
+name: 'PeDitXOS Firmware Builder'
+
+on:
+  workflow_dispatch:
+    inputs:
+      user_id:
+        description: 'Firebase User ID'
+        required: true
+        type: string
+      build_id:
+        description: 'Firestore Build ID'
+        required: true
+        type: string
+      device_target:
+        description: 'Device Target'
+        required: true
+        type: string
+      device_profile:
+        description: 'Device Profile'
+        required: true
+        type: string
+      target_arch:
+        description: 'Target Architecture (e.g., x86_64, aarch64_cortex-a53)'
+        required: true
+        type: string
+      openwrt_version:
+        description: 'OpenWrt Version'
+        required: true
+        type: string
+      extra_packages:
+        description: 'Extra packages'
+        required: false
+        type: string
+      theme_choice:
+        description: 'Selected LuCI theme (luci-theme-peditx or luci-theme-carbonpx)'
+        required: true
+        type: string
+      lan_ip:
+        description: 'The LAN IP address'
+        required: false
+        type: string
+      wifi_24_enabled:
+        description: 'Enable 2.4GHz WiFi'
+        required: false
+        type: string
+
+jobs:
+  build_firmware:
+    name: Build Firmware
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+
+      - name: 'Install Build Dependencies'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
+
+      - name: 'Authenticate to Google Cloud'
+        id: 'auth'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+      - name: 'Download and Extract OpenWrt ImageBuilder'
+        id: download_ib
+        run: |
+          TARGET_DIR_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}"
+          IMAGEBUILDER_FILENAME=$(curl -s "${TARGET_DIR_URL}/" | grep -o 'href="[^"]*imagebuilder[^"]*\.tar\.\(xz\|zst\)"' | head -n 1 | sed 's/href="//;s/"//')
+          if [ -z "$IMAGEBUILDER_FILENAME" ]; then
+            echo "::error::Could not automatically find the ImageBuilder filename."
+            exit 1
+          fi
+          echo "IMAGEBUILDER_FILENAME=${IMAGEBUILDER_FILENAME}" >> $GITHUB_OUTPUT
+          IMAGEBUILDER_URL="${TARGET_DIR_URL}/${IMAGEBUILDER_FILENAME}"
+          wget "${IMAGEBUILDER_URL}"
+          mkdir imagebuilder
+          tar -xf "${IMAGEBUILDER_FILENAME}" --strip-components=1 -C imagebuilder
+
+      - name: 'Prepare ImageBuilder Environment'
+        run: |
+          IMAGEBUILDER_DIR="imagebuilder"
+          echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> $GITHUB_ENV
+          TARGET_ARCH="${{ github.event.inputs.target_arch }}"
+          echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
+          REPO_CONF_FILE="${IMAGEBUILDER_DIR}/repositories.conf"
+          sed -i 's/^option check_signature.*/option check_signature 0/' "${REPO_CONF_FILE}"
+          echo "--- Signature check disabled ---"
+
+      - name: 'Generate Custom UCI Defaults Script'
+        run: |
+          UCI_SCRIPT_DIR="${{ github.workspace }}/files/etc/uci-defaults"
+          mkdir -p "${UCI_SCRIPT_DIR}"
+          UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
+          
+          echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
+          
+          # --- Add Custom opkg Repository ---
+          echo "# Add new opkg key" >> "${UCI_SCRIPT_PATH}"
+          echo "wget -O /tmp/passwall.pub https://repo.peditxdl.ir/passwall-packages/passwall.pub" >> "${UCI_SCRIPT_PATH}"
+          echo "opkg-key add /tmp/passwall.pub" >> "${UCI_SCRIPT_PATH}"
+          echo "rm /tmp/passwall.pub" >> "${UCI_SCRIPT_PATH}"
+          echo "# Add opkg repository" >> "${UCI_SCRIPT_PATH}"
+          echo "read release arch << EOF" >> "${UCI_SCRIPT_PATH}"
+          echo "\$(. /etc/openwrt_release ; echo \${DISTRIB_RELEASE%.*} \$DISTRIB_ARCH)" >> "${UCI_SCRIPT_PATH}"
+          echo "EOF" >> "${UCI_SCRIPT_PATH}"
+          echo "for feed in passwall_luci passwall_packages passwall2; do" >> "${UCI_SCRIPT_PATH}"
+          echo "  echo \"src/gz \$feed https://repo.peditxdl.ir/passwall-packages/releases/packages-\$release/\$arch/\$feed\" >> /etc/opkg/customfeeds.conf" >> "${UCI_SCRIPT_PATH}"
+          echo "done" >> "${UCI_SCRIPT_PATH}"
+          echo "" >> "${UCI_SCRIPT_PATH}"
+
+          # --- Modify Release Info for Branding ---
+          echo "sed -i 's/DISTRIB_RELEASE=.*/DISTRIB_RELEASE=\"PeDitXOS (${{ github.event.inputs.openwrt_version }})\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
+          echo "sed -i 's/DISTRIB_DESCRIPTION=.*/DISTRIB_DESCRIPTION=\"PeDitXOS Telegram: @peditx\"/' /etc/openwrt_release" >> "${UCI_SCRIPT_PATH}"
+          echo "sed -i 's/^NAME=.*/NAME=\"PeDitXOS\"/' /etc/os-release" >> "${UCI_SCRIPT_PATH}"
+          echo "sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME=\"PeDitXOS (${{ github.event.inputs.openwrt_version }})\"/' /etc/os-release" >> "${UCI_SCRIPT_PATH}"
+
+          # --- UCI settings ---
+          THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
+          echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
+          echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
+          echo "set luci.main.mediaurlbase='/luci-static/${THEME_NAME}'" >> "${UCI_SCRIPT_PATH}"
+
+          if [ -n "${{ github.event.inputs.lan_ip }}" ]; then
+            echo "set network.lan.ipaddr='${{ github.event.inputs.lan_ip }}'" >> "${UCI_SCRIPT_PATH}"
+            echo "set dhcp.lan.start='100'" >> "${UCI_SCRIPT_PATH}"
+            echo "set dhcp.lan.limit='150'" >> "${UCI_SCRIPT_PATH}"
+            echo "set dhcp.lan.interface='lan'" >> "${UCI_SCRIPT_PATH}"
+          fi
+          
+          if [ "${{ github.event.inputs.wifi_24_enabled }}" = "false" ]; then
+            echo "set wireless.radio0.disabled='1'" >> "${UCI_SCRIPT_PATH}"
+          else
+            echo "set wireless.radio0.disabled='0'" >> "${UCI_SCRIPT_PATH}"
+          fi
+
+          echo "commit" >> "${UCI_SCRIPT_PATH}"
+          echo "EOF" >> "${UCI_SCRIPT_PATH}"
+
+          # --- Reload services to apply all changes ---
+          echo "/sbin/reload_config" >> "${UCI_SCRIPT_PATH}"
+          
+          chmod +x "${UCI_SCRIPT_PATH}"
+          echo "--- Custom settings, branding, and repo script generated ---"
+          cat "${UCI_SCRIPT_PATH}"
+
+      - name: 'Download Custom IPK Packages'
+        run: |
+          CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
+          mkdir -p "${CUSTOM_PKG_DIR}"
+          
+          download_latest_ipk() {
+            local REPO_NAME="$1"
+            if [ -z "$REPO_NAME" ]; then return; fi
+            local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
+            local API_RESPONSE=$(curl -sL "$API_URL")
+            if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
+              local IPK_URL=$(echo "${API_RESPONSE}" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
+              if [ -n "$IPK_URL" ]; then
+                wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
+                echo "--> Successfully downloaded ${REPO_NAME}"
+              else
+                echo "::warning::Found release for ${REPO_NAME}, but no .ipk file was found."
+              fi
+            else
+              echo "::warning::Could not find a valid release for ${REPO_NAME}. Skipping."
+            fi
+          }
+
+          download_themeswitch() {
+            local REPO_NAME="luci-app-themeswitch"
+            echo "--> Attempting to download ${REPO_NAME} for arch ${{ env.TARGET_ARCH }}..."
+            local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
+            local API_RESPONSE=$(curl -sL --fail "$API_URL") || { echo "::error::Failed to fetch latest release for ${REPO_NAME}."; exit 1; }
+
+            if echo "${API_RESPONSE}" | jq -e '.tag_name' > /dev/null; then
+              local LATEST_VERSION=$(echo "${API_RESPONSE}" | jq -r '.tag_name')
+              local PKG_FILENAME="luci-app-themeswitch_${LATEST_VERSION}_${{ env.TARGET_ARCH }}.ipk"
+              local IPK_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${PKG_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
+
+              if [ -n "$IPK_URL" ] && [ "$IPK_URL" != "null" ]; then
+                wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
+                echo "--> Successfully downloaded ${PKG_FILENAME}"
+              else
+                echo "::error::Could not find ${PKG_FILENAME} in the latest release. Please check if a package for architecture '${{ env.TARGET_ARCH }}' exists."
+                exit 1
+              fi
+            else
+              echo "::error::Could not find a valid release tag for ${REPO_NAME}."
+              exit 1
+            fi
+          }
+
+          download_passwall_bundle() {
+            local PASSWALL_REPO="$1"
+            echo "--> Attempting to download package and dependency bundle for ${PASSWALL_REPO}..."
+            download_latest_ipk "${PASSWALL_REPO}"
+            local API_URL="https://api.github.com/repos/peditx/${PASSWALL_REPO}/releases/latest"
+            local API_RESPONSE=$(curl -sL "$API_URL")
+            if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
+              local ZIP_FILENAME="passwall_packages_ipk_${{ env.TARGET_ARCH }}.zip"
+              local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
+              if [ -n "$ZIP_URL" ]; then
+                wget -q "${ZIP_URL}" -O dependencies.zip
+                unzip -qo dependencies.zip -d "${CUSTOM_PKG_DIR}"
+                rm dependencies.zip
+                echo "--> Successfully downloaded dependency bundle for ${PASSWALL_REPO}"
+              else
+                echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO} (arch: ${{ env.TARGET_ARCH }})."
+              fi
+            else
+                echo "::warning::Could not find a valid release for ${PASSWALL_REPO} to get dependency bundle."
+            fi
+          }
+
+          download_latest_ipk "${{ github.event.inputs.theme_choice }}"
+          download_themeswitch
+          
+          for pkg in ${{ github.event.inputs.extra_packages }}; do
+            if [[ "$pkg" == "luci-app-passwall" ]]; then
+              download_passwall_bundle "openwrt-passwall"
+            fi
+            if [[ "$pkg" == "luci-app-passwall2" ]]; then
+              download_passwall_bundle "openwrt-passwall2"
+            fi
+          done
+    
+      - name: 'Build Firmware Image'
+        id: build_image
+        run: |
+          cd "${{ env.IMAGEBUILDER_DIR }}"
+          make clean
+          
+          THEME_PACKAGES="${{ github.event.inputs.theme_choice }} luci-app-themeswitch"
+          BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
+          ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq ${{ github.event.inputs.extra_packages }}"
+          
+          echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
+          echo "Final Packages: ${ALL_PACKAGES}"
+
+          # Prepare base make command arguments
+          MAKE_ARGS="PROFILE='${{ github.event.inputs.device_profile }}' PACKAGES='${ALL_PACKAGES}' FILES='${{ github.workspace }}/files' BIN_DIR='${{ github.workspace }}/output' V=s"
+
+          # Smartly determine if a larger RootFS is needed based on profile name or target
+          NEEDS_LARGER_ROOTFS=false
+          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
+            NEEDS_LARGER_ROOTFS=true
+          fi
+
+          # General rule for SBCs based on 'pi' in the profile name
+          if [[ "${{ github.event.inputs.device_profile }}" == *pi* ]]; then
+            NEEDS_LARGER_ROOTFS=true
+          fi
+
+          if [[ "$NEEDS_LARGER_ROOTFS" == "true" ]]; then
+            echo "SBC-like target or profile detected. Applying default size of 512MB."
+            MAKE_ARGS="${MAKE_ARGS} CONFIG_TARGET_ROOTFS_PARTSIZE=512"
+          else
+            echo "Using default RootFS size for the profile."
+          fi
+          
+          # Execute the final make command
+          eval make image ${MAKE_ARGS}
+
+      - name: 'Upload build logs on failure'
+        if: failure() && steps.build_image.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: ${{ env.IMAGEBUILDER_DIR }}/logs/
+
+      - name: 'List Output Directory Contents'
+        if: always()
+        run: |
+          echo "--- Listing contents of output directory ---"
+          ls -R ${{ github.workspace }}/output
+
+      - name: 'Organize, Rename, and Compress Files'
+        id: organize_files
+        run: |
+          cd "${{ github.workspace }}/output"
+          if [ -z "$(ls -A .)" ]; then 
+            echo "::error::Build failed, no files were generated."
+            exit 1
+          fi
+          
+          PRIMARY_IMAGE=""
+          if [[ -n $(find . -name "*sysupgrade.itb*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sysupgrade.itb*" | head -n 1)
+          elif [[ -n $(find . -name "*sysupgrade.bin*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sysupgrade.bin*" | head -n 1)
+          elif [[ -n $(find . -name "*sysupgrade.img.gz*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sysupgrade.img.gz*" | head -n 1)
+          elif [[ -n $(find . -name "*squashfs-combined-efi.img.gz*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*squashfs-combined-efi.img.gz*" | head -n 1)
+          fi
+
+          if [ -z "$PRIMARY_IMAGE" ]; then
+            echo "::error::No primary flashable image found!"
+            exit 1
+          fi
+          echo "Primary image found: ${PRIMARY_IMAGE}"
+          
+          for f in openwrt-*; do mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
+          rm -f *.json
+
+          TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
+          ARCHIVE_NAME="PeDitXOS-${{ github.event.inputs.device_profile }}-${TIMESTAMP}.zip"
+          
+          zip -r "${ARCHIVE_NAME}" .
+          
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+          echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_OUTPUT
+
+      - name: 'Upload Firmware to SourceForge'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_PROJECT_NAME: ${{ secrets.SF_PROJECT_NAME }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
+          
+          REMOTE_BASE_DIR="/home/frs/project/${SF_PROJECT_NAME}/users"
+          REMOTE_UPLOAD_DIR="${REMOTE_BASE_DIR}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
+          LOCAL_FILE_PATH="${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
+
+          echo "Connecting to sftp://frs.sourceforge.net as user ${SF_USERNAME}"
+          echo "Remote directory to create: ${REMOTE_UPLOAD_DIR}"
+          echo "Local file to upload: ${LOCAL_FILE_PATH}"
+          
+          lftp -c "
+          set sftp:connect-program 'ssh -a -x -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes';
+          open -u ${SF_USERNAME}, sftp://frs.sourceforge.net;
+          mkdir -p ${REMOTE_UPLOAD_DIR};
+          cd ${REMOTE_UPLOAD_DIR};
+          put ${LOCAL_FILE_PATH};
+          bye;
+          "
+          
+          rm -f ~/.ssh/id_rsa
+          echo "Upload complete."
+
+      - name: 'Report Success to Firestore'
+        if: success()
+        run: |
+          echo "--> Updating Firestore (success)..."
+          ACCESS_TOKEN=$(gcloud auth print-access-token)
+          PROJECT_ID="${{ steps.auth.outputs.project_id }}"
+          
+          DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
+          
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "fields": {
+              "status": { "stringValue": "completed" },
+              "downloadUrl": { "stringValue": "${DOWNLOAD_URL}" }
+            }
+          }
+          EOF
+          )
+
+          curl --fail -X PATCH \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -d "${JSON_PAYLOAD}" \
+            "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}?updateMask.fieldPaths=status&updateMask.fieldPaths=downloadUrl"
+            
+          echo "Firestore update successful."
+
+      - name: 'Report Failure to Firestore'
+        if: failure()
+        run: |
+          echo "--> Updating Firestore (failure)..."
+          ACCESS_TOKEN=$(gcloud auth print-access-token)
+          PROJECT_ID="${{ steps.auth.outputs.project_id }}"
+
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "fields": {
+              "status": { "stringValue": "failed" },
+              "downloadUrl": { "nullValue": null }
+            }
+          }
+          EOF
+          )
+
+          curl --fail -X PATCH \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -d "${JSON_PAYLOAD}" \
+            "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}?updateMask.fieldPaths=status&updateMask.fieldPaths=downloadUrl"
+            
+          echo "Firestore update successful."
