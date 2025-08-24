@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version, with correct pre-build branding and NTP hotplug fix)
+# .github/workflows/build.yml (Final Version, with robust pre-build branding and NTP hotplug fix)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -98,26 +98,34 @@ jobs:
       - name: 'Prepare Custom Files and Scripts'
         run: |
           FILES_DIR="${{ github.workspace }}/files"
-          IB_DIR="${{ env.IMAGEBUILDER_DIR }}"
-          
-          # --- Prepare Branding Files (pre-build) ---
           mkdir -p "${FILES_DIR}/etc"
-          # Find the base-files directory dynamically
-          BASE_FILES_PATH=$(find "${IB_DIR}/target/linux/" -type d -name "base-files" | head -n 1)
-          if [ -z "$BASE_FILES_PATH" ]; then
-            echo "::error::Could not find base-files directory."
-            exit 1
-          fi
-          echo "Found base-files at: $BASE_FILES_PATH"
           
-          cp "${BASE_FILES_PATH}/etc/openwrt_release" "${FILES_DIR}/etc/openwrt_release"
-          cp "${BASE_FILES_PATH}/etc/os-release" "${FILES_DIR}/etc/os-release"
-
-          sed -i "s/DISTRIB_RELEASE=.*/DISTRIB_RELEASE='PeDitXOS (${{ github.event.inputs.openwrt_version }})'/" "${FILES_DIR}/etc/openwrt_release"
-          sed -i "s/DISTRIB_DESCRIPTION=.*/DISTRIB_DESCRIPTION='PeDitXOS Telegram: @peditx'/" "${FILES_DIR}/etc/openwrt_release"
-          sed -i "s/^NAME=.*/NAME='PeDitXOS'/" "${FILES_DIR}/etc/os-release"
-          sed -i "s/^PRETTY_NAME=.*/PRETTY_NAME='PeDitXOS (${{ github.event.inputs.openwrt_version }})'/" "${FILES_DIR}/etc/os-release"
-          echo "--- Custom release files generated ---"
+          # --- Create final branded release files from scratch (pre-build) ---
+          cat << EOF > "${FILES_DIR}/etc/openwrt_release"
+          DISTRIB_ID='PeDitXOS'
+          DISTRIB_RELEASE='PeDitXOS (${{ github.event.inputs.openwrt_version }})'
+          DISTRIB_REVISION='r0+peditx'
+          DISTRIB_TARGET='${{ github.event.inputs.device_target }}'
+          DISTRIB_ARCH='${{ github.event.inputs.target_arch }}'
+          DISTRIB_DESCRIPTION='PeDitXOS Telegram: @peditx'
+          DISTRIB_TAINTS='no-all'
+          EOF
+                    cat << EOF > "${FILES_DIR}/etc/os-release"
+          NAME='PeDitXOS'
+          VERSION='${{ github.event.inputs.openwrt_version }}'
+          ID='peditxos'
+          ID_LIKE='openwrt'
+          PRETTY_NAME='PeDitXOS (${{ github.event.inputs.openwrt_version }})'
+          VERSION_ID='${{ github.event.inputs.openwrt_version }}'
+          HOME_URL='https://sourceforge.net/projects/peditxos/'
+          SUPPORT_URL='https://t.me/peditx'
+          BUG_REPORT_URL='https://t.me/peditx'
+          OPENWRT_BOARD='${{ github.event.inputs.device_target }}'
+          OPENWRT_ARCH='${{ github.event.inputs.target_arch }}'
+          OPENWRT_TAINTS='no-all'
+          OPENWRT_RELEASE='PeDitXOS (${{ github.event.inputs.openwrt_version }})'
+          EOF
+          echo "--- Final branded release files generated ---"
 
           # --- Create NTP Hotplug Script ---
           HOTPLUG_DIR="${FILES_DIR}/etc/hotplug.d/iface"
@@ -137,6 +145,7 @@ jobs:
           
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
+          # Add Custom opkg Repository
           echo "wget -O /tmp/passwall.pub https://repo.peditxdl.ir/passwall-packages/passwall.pub" >> "${UCI_SCRIPT_PATH}"
           echo "opkg-key add /tmp/passwall.pub" >> "${UCI_SCRIPT_PATH}"
           echo "rm /tmp/passwall.pub" >> "${UCI_SCRIPT_PATH}"
@@ -148,6 +157,7 @@ jobs:
           echo "done" >> "${UCI_SCRIPT_PATH}"
           echo "" >> "${UCI_SCRIPT_PATH}"
 
+          # UCI settings
           THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
