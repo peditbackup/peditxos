@@ -1,4 +1,4 @@
-# .github/workflows/build.yml (Final Version, direct make command for robust RootFS sizing)
+# .github/workflows/build.yml (Final Version, with smart package filtering for SBCs)
 
 name: 'PeDitXOS Firmware Builder'
 
@@ -241,41 +241,55 @@ jobs:
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
           
+          # Determine if the target is an SBC
+          IS_SBC=false
+          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
+            IS_SBC=true
+          fi
+          case "${{ github.event.inputs.device_profile }}" in
+            *nanopi*|*bananapi*|*orangepi*|*rpi*)
+              IS_SBC=true
+              ;;
+          esac
+
+          # Filter extra packages if it's an SBC with too many heavy packages
+          FINAL_EXTRA_PACKAGES="${{ github.event.inputs.extra_packages }}"
+          if [[ "$IS_SBC" == "true" ]]; then
+            HEAVY_PKG_COUNT=0
+            for pkg in luci-app-passwall luci-app-passwall2 luci-app-wol luci-app-smartdns; do
+              if [[ " ${{ github.event.inputs.extra_packages }} " =~ " ${pkg} " ]]; then
+                HEAVY_PKG_COUNT=$((HEAVY_PKG_COUNT + 1))
+              fi
+            done
+            
+            if (( HEAVY_PKG_COUNT > 2 )); then
+              echo "::warning::More than 2 heavy packages selected for an SBC. Ignoring luci-app-wol and luci-app-smartdns to save space."
+              FINAL_EXTRA_PACKAGES=$(echo "$FINAL_EXTRA_PACKAGES" | sed 's/luci-app-wol//g' | sed 's/luci-app-smartdns//g')
+            fi
+          fi
+
           # Install both themes and the themeswitch app
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
-          ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq ${{ github.event.inputs.extra_packages }}"
+          ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq ${FINAL_EXTRA_PACKAGES}"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
 
-          # Robustly determine if a larger RootFS is needed based on specific profile names
-          NEEDS_LARGER_ROOTFS=false
-          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" ]]; then
-            NEEDS_LARGER_ROOTFS=true
-          fi
-
-          case "${{ github.event.inputs.device_profile }}" in
-            # List of known SBC profiles that require a larger rootfs.
-            *nanopi*|*bananapi*|*orangepi*|*rpi*)
-              NEEDS_LARGER_ROOTFS=true
-              ;;
-          esac
-
-          if [[ "$NEEDS_LARGER_ROOTFS" == "true" ]]; then
-            echo "SBC-like target or profile detected. Applying size of 512MB."
-            make image PROFILE="${{ github.event.inputs.device_profile }}" \
-              PACKAGES="${ALL_PACKAGES}" \
-              FILES="${{ github.workspace }}/files" \
-              BIN_DIR="${{ github.workspace }}/output" \
-              CONFIG_TARGET_ROOTFS_PARTSIZE=512 V=s
+          # Force the RootFS size by writing to the .config file if it's an SBC
+          if [[ "$IS_SBC" == "true" ]]; then
+            echo "SBC-like target or profile detected. Forcing RootFS size to 512MB in .config"
+            sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
+            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
           else
             echo "Using default RootFS size for the profile."
-            make image PROFILE="${{ github.event.inputs.device_profile }}" \
-              PACKAGES="${ALL_PACKAGES}" \
-              FILES="${{ github.workspace }}/files" \
-              BIN_DIR="${{ github.workspace }}/output" V=s
           fi
+          
+          # Now, run the standard make command. It will pick up the .config change.
+          make image PROFILE="${{ github.event.inputs.device_profile }}" \
+            PACKAGES="${ALL_PACKAGES}" \
+            FILES="${{ github.workspace }}/files" \
+            BIN_DIR="${{ github.workspace }}/output" V=s
 
       - name: 'Upload build logs on failure'
         if: failure() && steps.build_image.outcome == 'failure'
