@@ -108,7 +108,7 @@ jobs:
           DISTRIB_DESCRIPTION='PeDitXOS Telegram: @peditx'
           DISTRIB_TAINTS='no-all'
           EOF
-          				cat << EOF > "${FILES_DIR}/etc/os-release"
+          cat << EOF > "${FILES_DIR}/etc/os-release"
           NAME='PeDitXOS'
           VERSION='${{ github.event.inputs.openwrt_version }}'
           ID='peditxos'
@@ -125,6 +125,18 @@ jobs:
           EOF
           echo "--- Final branded release files generated ---"
 
+          # --- Create custom feeds file directly ---
+          OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
+          TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
+          CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
+          mkdir -p "${CUSTOM_FEEDS_DIR}"
+          CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
+          echo "# PeDitXOS Custom Feeds" > "${CUSTOM_FEEDS_FILE}"
+          for feed in passwall_luci passwall_packages passwall2; do
+            echo "src/gz $feed https://repo.peditxdl.ir/passwall-packages/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/$feed" >> "${CUSTOM_FEEDS_FILE}"
+          done
+          echo "--- Custom feeds file generated ---"
+
           # --- Create UCI Defaults Script ---
           UCI_SCRIPT_DIR="${FILES_DIR}/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
@@ -132,17 +144,13 @@ jobs:
           
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
-          # Add Custom opkg Repository
-          echo "wget -O /tmp/passwall.pub https://repo.peditxdl.ir/passwall-packages/passwall.pub" >> "${UCI_SCRIPT_PATH}"
-          echo "opkg-key add /tmp/passwall.pub" >> "${UCI_SCRIPT_PATH}"
-          echo "rm /tmp/passwall.pub" >> "${UCI_SCRIPT_PATH}"
-          echo "read release arch << EOF" >> "${UCI_SCRIPT_PATH}"
-          echo "$( . /etc/openwrt_release ; echo ${DISTRIB_RELEASE%.*} $DISTRIB_ARCH)" >> "${UCI_SCRIPT_PATH}"
-          echo "EOF" >> "${UCI_SCRIPT_PATH}"
-          echo "for feed in passwall_luci passwall_packages passwall2; do" >> "${UCI_SCRIPT_PATH}"
-          echo "  echo \"src/gz \$feed https://repo.peditxdl.ir/passwall-packages/releases/packages-\$release/\$arch/\$feed\" >> /etc/opkg/customfeeds.conf" >> "${UCI_SCRIPT_PATH}"
-          echo "done" >> "${UCI_SCRIPT_PATH}"
-          echo "" >> "${UCI_SCRIPT_PATH}"
+          # --- Add Custom opkg key on first boot ---
+          cat << 'EOF_SCRIPT' >> "${UCI_SCRIPT_PATH}"
+          # Add new opkg key
+          wget -O /tmp/passwall.pub https://repo.peditxdl.ir/passwall-packages/passwall.pub
+          opkg-key add /tmp/passwall.pub
+          rm /tmp/passwall.pub
+          EOF_SCRIPT
 
           # UCI settings
           THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
@@ -259,7 +267,7 @@ jobs:
               download_passwall_bundle "openwrt-passwall2"
             fi
           done
-      
+    
       - name: 'Build Firmware Image'
         id: build_image
         run: |
@@ -445,3 +453,4 @@ jobs:
             "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}?updateMask.fieldPaths=status&updateMask.fieldPaths=downloadUrl"
             
           echo "Firestore update successful."
+
