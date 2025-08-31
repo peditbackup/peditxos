@@ -148,6 +148,7 @@ jobs:
           THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
+          echo "set system.@system[0].description='PeDitXOS (Built for ${{ github.event.inputs.device_profile }})'" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].timezone='Asia/Tehran'" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].zonename='IRT+3:30'" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].ntpserver='ir.pool.ntp.org time.cloudflare.com'" >> "${UCI_SCRIPT_PATH}"
