@@ -267,7 +267,7 @@ jobs:
               download_passwall_bundle "openwrt-passwall2"
             fi
           done
-    
+   
       - name: 'Build Firmware Image'
         id: build_image
         run: |
@@ -344,15 +344,40 @@ jobs:
           fi
           
           PRIMARY_IMAGE=""
-          if [[ -n $(find . -name "*sysupgrade.itb*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sysupgrade.itb*" | head -n 1)
-          elif [[ -n $(find . -name "*sysupgrade.bin*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sysupgrade.bin*" | head -n 1)
-          elif [[ -n $(find . -name "*sysupgrade.img.gz*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sysupgrade.img.gz*" | head -n 1)
-          elif [[ -n $(find . -name "*squashfs-combined-efi.img.gz*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*squashfs-combined-efi.img.gz*" | head -n 1)
-          fi
+          # لیست کامل پسوندهای sysupgrade
+          for ext in \
+            "*.sysupgrade.bin" \
+            "*.sysupgrade.itb" \
+            "*.sysupgrade.img" \
+            "*.sysupgrade.img.gz" \
+            "*.squashfs-sysupgrade.bin" \
+            "*.ext4-sysupgrade.img.gz" \
+            "*.nand-sysupgrade.bin" \
+            "*.ubi-sysupgrade.img" \
+            "*.trx" \
+            "*.chk" \
+            "*.tar" \
+            "*.ubi" \
+            "*.ubifs" \
+            "*.ext4" \
+            "*.ext4.gz" \
+            "*.ext4.xz" \
+            "*.sdcard.img.gz" \
+            "*.sdcard.img.xz" \
+            "*.factory.bin" \
+            "*.factory.img" \
+            "*.sdimg" \
+            "*.wic" \
+            "*.vdi" \
+            "*.vmdk" \
+            "*.qcow2" \
+            "*.vhdx"
+          do
+            if [[ -n $(find . -name "$ext" | head -n 1) ]]; then
+              PRIMARY_IMAGE=$(find . -name "$ext" | head -n 1)
+              break
+            fi
+          done
 
           if [ -z "$PRIMARY_IMAGE" ]; then
             echo "::error::No primary flashable image found!"
