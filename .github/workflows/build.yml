@@ -344,40 +344,55 @@ jobs:
           fi
           
           PRIMARY_IMAGE=""
-          # لیست کامل پسوندهای sysupgrade
-          for ext in \
-            "*.sysupgrade.bin" \
-            "*.sysupgrade.itb" \
-            "*.sysupgrade.img" \
-            "*.sysupgrade.img.gz" \
-            "*.squashfs-sysupgrade.bin" \
-            "*.ext4-sysupgrade.img.gz" \
-            "*.nand-sysupgrade.bin" \
-            "*.ubi-sysupgrade.img" \
-            "*.trx" \
-            "*.chk" \
-            "*.tar" \
-            "*.ubi" \
-            "*.ubifs" \
-            "*.ext4" \
-            "*.ext4.gz" \
-            "*.ext4.xz" \
-            "*.sdcard.img.gz" \
-            "*.sdcard.img.xz" \
-            "*.factory.bin" \
-            "*.factory.img" \
-            "*.sdimg" \
-            "*.wic" \
-            "*.vdi" \
-            "*.vmdk" \
-            "*.qcow2" \
-            "*.vhdx"
-          do
-            if [[ -n $(find . -name "$ext" | head -n 1) ]]; then
-              PRIMARY_IMAGE=$(find . -name "$ext" | head -n 1)
-              break
-            fi
-          done
+          if [[ -n $(find . -name "*sysupgrade.itb*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sysupgrade.itb*" | head -n 1)
+          elif [[ -n $(find . -name "*sysupgrade.bin*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sysupgrade.bin*" | head -n 1)
+          elif [[ -n $(find . -name "*sysupgrade.img*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sysupgrade.img*" | head -n 1)
+          elif [[ -n $(find . -name "*sysupgrade.img.gz*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sysupgrade.img.gz*" | head -n 1)
+          elif [[ -n $(find . -name "*squashfs-sysupgrade.bin*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*squashfs-sysupgrade.bin*" | head -n 1)
+          elif [[ -n $(find . -name "*ext4-sysupgrade.img.gz*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*ext4-sysupgrade.img.gz*" | head -n 1)
+          elif [[ -n $(find . -name "*nand-sysupgrade.bin*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*nand-sysupgrade.bin*" | head -n 1)
+          elif [[ -n $(find . -name "*ubi-sysupgrade.img*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*ubi-sysupgrade.img*" | head -n 1)
+          elif [[ -n $(find . -name "*trx*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*trx*" | head -n 1)
+          elif [[ -n $(find . -name "*chk*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*chk*" | head -n 1)
+          elif [[ -n $(find . -name "*tar*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*tar*" | head -n 1)
+          elif [[ -n $(find . -name "*ubi*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*ubi*" | head -n 1)
+          elif [[ -n $(find . -name "*ubifs*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*ubifs*" | head -n 1)
+          elif [[ -n $(find . -name "*ext4*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*ext4*" | head -n 1)
+          elif [[ -n $(find . -name "*sdcard.img.gz*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sdcard.img.gz*" | head -n 1)
+          elif [[ -n $(find . -name "*sdcard.img.xz*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sdcard.img.xz*" | head -n 1)
+          elif [[ -n $(find . -name "*factory.bin*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*factory.bin*" | head -n 1)
+          elif [[ -n $(find . -name "*factory.img*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*factory.img*" | head -n 1)
+          elif [[ -n $(find . -name "*sdimg*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sdimg*" | head -n 1)
+          elif [[ -n $(find . -name "*wic*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*wic*" | head -n 1)
+          elif [[ -n $(find . -name "*vdi*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*vdi*" | head -n 1)
+          elif [[ -n $(find . -name "*vmdk*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*vmdk*" | head -n 1)
+          elif [[ -n $(find . -name "*qcow2*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*qcow2*" | head -n 1)
+          elif [[ -n $(find . -name "*vhdx*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*vhdx*" | head -n 1)
+          fi
 
           if [ -z "$PRIMARY_IMAGE" ]; then
             echo "::error::No primary flashable image found!"
@@ -478,3 +493,4 @@ jobs:
             "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/users/${{ github.event.inputs.user_id }}/builds/${{ github.event.inputs.build_id }}?updateMask.fieldPaths=status&updateMask.fieldPaths=downloadUrl"
             
           echo "Firestore update successful."
+
