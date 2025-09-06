@@ -1,4 +1,4 @@
-name: 'PeDitXOS Firmware Builder'
+name: 'new'
 
 on:
   workflow_dispatch:
@@ -210,25 +210,33 @@ jobs:
 
           download_themeswitch() {
             local REPO_NAME="luci-app-themeswitch"
-            echo "--> Attempting to download ${REPO_NAME} for arch ${{ env.TARGET_ARCH }}..."
+            echo "--> Attempting to download ${REPO_NAME}..."
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
-            local API_RESPONSE=$(curl -sL --fail "$API_URL") || { echo "::error::Failed to fetch latest release for ${REPO_NAME}."; exit 1; }
+            local API_RESPONSE=$(curl -sL "$API_URL")
+            
+            if ! echo "${API_RESPONSE}" | jq -e '.tag_name' > /dev/null; then
+              echo "::warning::Could not fetch latest release for ${REPO_NAME}. Skipping themeswitch."
+              return
+            fi
 
-            if echo "${API_RESPONSE}" | jq -e '.tag_name' > /dev/null; then
-              local LATEST_VERSION=$(echo "${API_RESPONSE}" | jq -r '.tag_name')
-              local PKG_FILENAME="luci-app-themeswitch_${LATEST_VERSION}_${{ env.TARGET_ARCH }}.ipk"
-              local IPK_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${PKG_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
+            local LATEST_VERSION=$(echo "${API_RESPONSE}" | jq -r '.tag_name')
+            local IPK_URL=""
+            
+            # First, try to find an architecture-specific package
+            local ARCH_PKG_FILENAME="luci-app-themeswitch_${LATEST_VERSION}_${{ env.TARGET_ARCH }}.ipk"
+            IPK_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ARCH_PKG_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
 
-              if [ -n "$IPK_URL" ] && [ "$IPK_URL" != "null" ]; then
-                wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
-                echo "--> Successfully downloaded ${PKG_FILENAME}"
-              else
-                echo "::error::Could not find ${PKG_FILENAME} in the latest release. Please check if a package for architecture '${{ env.TARGET_ARCH }}' exists."
-                exit 1
-              fi
+            # If not found, try to find an 'all' package as a fallback
+            if [ -z "$IPK_URL" ] || [ "$IPK_URL" == "null" ]; then
+              local ALL_PKG_FILENAME="luci-app-themeswitch_${LATEST_VERSION}_all.ipk"
+              IPK_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ALL_PKG_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
+            fi
+
+            if [ -n "$IPK_URL" ] && [ "$IPK_URL" != "null" ]; then
+              wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
+              echo "--> Successfully downloaded themeswitch package."
             else
-              echo "::error::Could not find a valid release tag for ${REPO_NAME}."
-              exit 1
+              echo "::warning::Could not find a compatible 'luci-app-themeswitch' package for arch '${{ env.TARGET_ARCH }}' or 'all'. It will be excluded from the build."
             fi
           }
 
@@ -274,48 +282,85 @@ jobs:
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
           
-          # Determine if the target is a non-x86 SBC
-          IS_NON_X86_SBC=false
+          # Determine device category for fine-tuned package selection
+          IS_VERY_LIMITED_FLASH=false
+          IS_SBC=false
           case "${{ github.event.inputs.device_profile }}" in
+            *xiaomi_mi-router-4a-gigabit*) # Add other 16MB flash devices here
+              IS_VERY_LIMITED_FLASH=true
+              ;;
             *nanopi*|*bananapi*|*orangepi*|*rpi*)
-              IS_NON_X86_SBC=true
+              IS_SBC=true
               ;;
           esac
 
-          # Filter extra packages ONLY if it's a non-x86 SBC with too many heavy packages
+          # Start with the user's selected packages
           FINAL_EXTRA_PACKAGES="${{ github.event.inputs.extra_packages }}"
-          if [[ "$IS_NON_X86_SBC" == "true" ]]; then
+
+          # Apply package filtering logic based on device constraints
+          if [[ "$IS_VERY_LIMITED_FLASH" == "true" ]]; then
+            # Priority logic for passwall on 16MB devices
+            if [[ " $FINAL_EXTRA_PACKAGES " =~ " luci-app-passwall " && " $FINAL_EXTRA_PACKAGES " =~ " luci-app-passwall2 " ]]; then
+              echo "::warning::Both passwall and passwall2 were selected for a 16MB device. Removing 'luci-app-passwall' to prioritize 'luci-app-passwall2'."
+              FINAL_EXTRA_PACKAGES=$(echo " $FINAL_EXTRA_PACKAGES " | sed 's/ luci-app-passwall / /g' | xargs)
+            fi
+          fi
+
+          if [[ "$IS_VERY_LIMITED_FLASH" == "true" || "$IS_SBC" == "true" ]]; then
+            echo "::notice::Space-constrained device detected. Checking heavy package count."
             HEAVY_PKG_COUNT=0
-            for pkg in luci-app-passwall luci-app-passwall2 luci-app-wol luci-app-smartdns; do
-              if [[ " ${{ github.event.inputs.extra_packages }} " =~ " ${pkg} " ]]; then
+            HEAVY_PACKAGES="luci-app-passwall luci-app-passwall2 luci-app-wol luci-app-smartdns"
+            for pkg in $HEAVY_PACKAGES; do
+              # Count from the potentially modified package list
+              if [[ " $FINAL_EXTRA_PACKAGES " =~ " ${pkg} " ]]; then
                 HEAVY_PKG_COUNT=$((HEAVY_PKG_COUNT + 1))
               fi
             done
             
-            if (( HEAVY_PKG_COUNT > 2 )); then
-              echo "::warning::More than 2 heavy packages selected for an SBC. Ignoring luci-app-wol and luci-app-smartdns to save space."
-              FINAL_EXTRA_PACKAGES=$(echo "$FINAL_EXTRA_PACKAGES" | sed 's/luci-app-wol//g' | sed 's/luci-app-smartdns//g')
+            # Set package count threshold based on device type
+            THRESHOLD=2 # Default for SBCs
+            if [[ "$IS_VERY_LIMITED_FLASH" == "true" ]]; then
+              THRESHOLD=1 # Stricter limit for 16MB devices
+            fi
+
+            if (( HEAVY_PKG_COUNT > THRESHOLD )); then
+              echo "::warning::Too many heavy packages remain (Count: $HEAVY_PKG_COUNT, Max: $THRESHOLD). Removing lower-priority packages (wol, smartdns)."
+              FINAL_EXTRA_PACKAGES=$(echo " $FINAL_EXTRA_PACKAGES " | sed 's/ luci-app-wol / /g' | sed 's/ luci-app-smartdns / /g' | xargs)
             fi
           fi
 
-          # Install both themes and the themeswitch app
-          THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
+          # Conditionally include themes. Very limited devices do not get them to save space.
+          THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx" # Start with base themes
+          
+          # Check if themeswitch was downloaded before adding it to the list
+          if ls packages/luci-app-themeswitch*.ipk 1> /dev/null 2>&1; then
+             echo "Themeswitch package found, adding it to the build."
+             THEME_PACKAGES="${THEME_PACKAGES} luci-app-themeswitch"
+          else
+             echo "Themeswitch package not found, excluding it from the build."
+          fi
+
+          if [[ "$IS_VERY_LIMITED_FLASH" == "true" ]]; then
+            echo "::warning::Very limited flash device (16MB) detected. Removing all themes to save critical space."
+            THEME_PACKAGES=""
+          fi
+          
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
           ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq ${FINAL_EXTRA_PACKAGES}"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
 
-          # Force the RootFS size for x86 AND all non-x86 SBCs
-          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" || "$IS_NON_X86_SBC" == "true" ]]; then
-            echo "x86 or SBC target detected. Forcing RootFS size to 512MB in .config"
+          # Force a large RootFS size ONLY for x86 targets, as they have ample disk space.
+          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" || "${{ github.event.inputs.target_arch }}" == "i386_pentium4" ]]; then
+            echo "x86 target detected. Forcing RootFS size to 512MB."
             sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
             echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
           else
-            echo "Using default RootFS size for the profile."
+            echo "Using default RootFS size defined by the device profile."
           fi
           
-          # Now, run the standard make command. It will pick up the .config change.
+          # Now, run the standard make command.
           make image PROFILE="${{ github.event.inputs.device_profile }}" \
             PACKAGES="${ALL_PACKAGES}" \
             FILES="${{ github.workspace }}/files" \
@@ -338,26 +383,67 @@ jobs:
         id: organize_files
         run: |
           cd "${{ github.workspace }}/output"
-          if [ -z "$(ls -A .)" ]; then 
-            echo "::error::Build failed, no files were generated."
-            exit 1
+          echo "--- Searching for firmware files. Listing all files for debugging: ---"
+          ls -lR
+          
+          # New, comprehensive logic to find the primary flashable image with prioritization.
+          PRIMARY_IMAGE=""
+
+          # Priority 1: Specific sysupgrade images (most common and safe).
+          PRIMARY_IMAGE=$(find . -maxdepth 1 \( \
+            -name "*squashfs-sysupgrade.bin" -o \
+            -name "*ext4-sysupgrade.img.gz" -o \
+            -name "*nand-sysupgrade.bin" -o \
+            -name "*ubi-sysupgrade.img" -o \
+            -name "*sysupgrade.itb" -o \
+            -name "*sysupgrade.bin" \
+            \) -print -quit)
+
+          # Priority 2: SBC, VM, and other specific target images.
+          if [ -z "$PRIMARY_IMAGE" ]; then
+            PRIMARY_IMAGE=$(find . -maxdepth 1 \( \
+              -name "*sdcard.img.gz" -o \
+              -name "*sdcard.img.xz" -o \
+              -name "*.sdimg" -o \
+              -name "*.wic" -o \
+              -name "*squashfs-combined-efi.img.gz" -o \
+              -name "*.vdi" -o \
+              -name "*.vmdk" -o \
+              -name "*.qcow2" -o \
+              -name "*.vhdx" \
+              \) -print -quit)
           fi
           
-          PRIMARY_IMAGE=""
-          if [[ -n $(find . -name "*sysupgrade.itb*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sysupgrade.itb*" | head -n 1)
-          elif [[ -n $(find . -name "*sysupgrade.bin*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sysupgrade.bin*" | head -n 1)
-          elif [[ -n $(find . -name "*sysupgrade.img.gz*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sysupgrade.img.gz*" | head -n 1)
-          elif [[ -n $(find . -name "*squashfs-combined-efi.img.gz*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*squashfs-combined-efi.img.gz*" | head -n 1)
+          # Priority 3: Factory and legacy images.
+          if [ -z "$PRIMARY_IMAGE" ]; then
+            PRIMARY_IMAGE=$(find . -maxdepth 1 \( \
+              -name "*factory.bin" -o \
+              -name "*factory.img" -o \
+              -name "*.trx" -o \
+              -name "*.chk" \
+              \) -print -quit)
           fi
 
+          # Priority 4: Generic but common image types (last resort).
           if [ -z "$PRIMARY_IMAGE" ]; then
-            echo "::error::No primary flashable image found!"
+            PRIMARY_IMAGE=$(find . -maxdepth 1 \( \
+              -name "*.ubi" -o \
+              -name "*.ubifs" -o \
+              -name "*.img" -o \
+              -name "*.bin" \
+              \) -print -quit)
+          fi
+          
+          # Check if an image was found and handle the result.
+          if [ -z "$PRIMARY_IMAGE" ]; then
+            echo "::error::Build failed. No flashable image was found in the output directory."
+            echo "This almost always means the 'Build Firmware Image' step encountered a fatal error (like the firmware being too large for the device)."
+            echo "Please download and check the 'build-logs' artifact from this failed run to see the real reason for the failure."
             exit 1
           fi
+
+          # Remove './' prefix from find result if it exists
+          PRIMARY_IMAGE="${PRIMARY_IMAGE#./}"
           echo "Primary image found: ${PRIMARY_IMAGE}"
           
           for f in openwrt-*; do mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
