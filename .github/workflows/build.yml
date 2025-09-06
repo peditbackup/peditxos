@@ -257,7 +257,10 @@ jobs:
           # Download both themes and the themeswitch app
           download_latest_ipk "luci-theme-peditx"
           download_latest_ipk "luci-theme-carbonpx"
-          download_themeswitch
+          # Only download themeswitch if the target is NOT legacy x86
+          if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
+            download_themeswitch
+          fi
           
           for pkg in ${{ github.event.inputs.extra_packages }}; do
             if [[ "$pkg" == "luci-app-passwall" ]]; then
@@ -274,7 +277,29 @@ jobs:
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
           
-          # Determine if the target is a non-x86 SBC
+          # --- Smart Package Selection Logic ---
+          THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
+          BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
+          FINAL_EXTRA_PACKAGES="${{ github.event.inputs.extra_packages }}"
+
+          # --- Determine if package restrictions should be applied ---
+          APPLY_LOW_FLASH_RESTRICTIONS=false
+          
+          # Specific rule for legacy x86 (Pentium): ONLY remove themeswitch
+          if [[ "${{ github.event.inputs.device_target }}" == "x86/generic" ]]; then
+            echo "::notice::Legacy x86 target detected. Removing luci-app-themeswitch."
+            THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx"
+          fi
+
+          # Condition for devices with known limited flash storage (< 60MB)
+          case "${{ github.event.inputs.device_profile }}" in
+            *archer-a7-v5|*archer-c7-v5|*tl-wdr4300*|*tl-wr1043nd*|*wrt160nl*|*dir-860l-b1*)
+              APPLY_LOW_FLASH_RESTRICTIONS=true
+              echo "::notice::Device with limited flash (<60MB) detected. Applying package restrictions."
+              ;;
+          esac
+
+          # This is for a different rule for non-x86 SBCs
           IS_NON_X86_SBC=false
           case "${{ github.event.inputs.device_profile }}" in
             *nanopi*|*bananapi*|*orangepi*|*rpi*)
@@ -282,12 +307,35 @@ jobs:
               ;;
           esac
 
-          # Filter extra packages ONLY if it's a non-x86 SBC with too many heavy packages
-          FINAL_EXTRA_PACKAGES="${{ github.event.inputs.extra_packages }}"
-          if [[ "$IS_NON_X86_SBC" == "true" ]]; then
+          # Apply package filtering rules for low flash devices
+          if [[ "$APPLY_LOW_FLASH_RESTRICTIONS" == "true" ]]; then
+            
+            # Rule 1: Remove all theme packages (overwrites previous change if necessary)
+            THEME_PACKAGES=""
+            
+            # Rule 2: If passwall2 is selected, it gets priority over other heavy packages.
+            if [[ " ${FINAL_EXTRA_PACKAGES} " =~ " luci-app-passwall2 " ]]; then
+              echo "::notice::Prioritizing luci-app-passwall2. Removing other conflicting heavy packages."
+              KEPT_PACKAGES=""
+              for pkg in ${FINAL_EXTRA_PACKAGES}; do
+                case "$pkg" in
+                  luci-app-passwall|luci-app-wol|luci-app-smartdns)
+                    # Skip these packages
+                    ;;
+                  *)
+                    # Keep all other packages
+                    KEPT_PACKAGES="${KEPT_PACKAGES} ${pkg}"
+                    ;;
+                esac
+              done
+              FINAL_EXTRA_PACKAGES=$(echo "${KEPT_PACKAGES}" | xargs)
+            fi
+
+          elif [[ "$IS_NON_X86_SBC" == "true" ]]; then
+            # This is the original, more lenient filtering for powerful SBCs
             HEAVY_PKG_COUNT=0
             for pkg in luci-app-passwall luci-app-passwall2 luci-app-wol luci-app-smartdns; do
-              if [[ " ${{ github.event.inputs.extra_packages }} " =~ " ${pkg} " ]]; then
+              if [[ " ${FINAL_EXTRA_PACKAGES} " =~ " ${pkg} " ]]; then
                 HEAVY_PKG_COUNT=$((HEAVY_PKG_COUNT + 1))
               fi
             done
@@ -297,17 +345,15 @@ jobs:
               FINAL_EXTRA_PACKAGES=$(echo "$FINAL_EXTRA_PACKAGES" | sed 's/luci-app-wol//g' | sed 's/luci-app-smartdns//g')
             fi
           fi
-
-          # Install both themes and the themeswitch app
-          THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
-          BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
+          
+          # Assemble the final list of all packages
           ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq ${FINAL_EXTRA_PACKAGES}"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
 
           # Force the RootFS size for x86 AND all non-x86 SBCs
-          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" || "$IS_NON_X86_SBC" == "true" ]]; then
+          if [[ "${{ github.event.inputs.device_target }}" == "x86/64" || "${{ github.event.inputs.device_target }}" == "x86/generic" || "$IS_NON_X86_SBC" == "true" ]]; then
             echo "x86 or SBC target detected. Forcing RootFS size to 512MB in .config"
             sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
             echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
