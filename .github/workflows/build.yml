@@ -1,4 +1,4 @@
-name: 'new'
+name: 'PeDitXOS Firmware Builder'
 
 on:
   workflow_dispatch:
@@ -190,89 +190,90 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          download_latest_ipk() {
+          # A robust function to download the correct IPK package from a GitHub release.
+          # It prioritizes 'all' architecture packages, then falls back to arch-specific ones.
+          download_release_ipk() {
             local REPO_NAME="$1"
-            if [ -z "$REPO_NAME" ]; then return; fi
-            local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
-            local API_RESPONSE=$(curl -sL "$API_URL")
-            if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
-              local IPK_URL=$(echo "${API_RESPONSE}" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
-              if [ -n "$IPK_URL" ]; then
-                wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
-                echo "--> Successfully downloaded ${REPO_NAME}"
-              else
-                echo "::warning::Found release for ${REPO_NAME}, but no .ipk file was found."
-              fi
-            else
-              echo "::warning::Could not find a valid release for ${REPO_NAME}. Skipping."
-            fi
-          }
+            # An optional second argument for the package name if it differs from the repo name
+            local PKG_NAME_BASE=${2:-$REPO_NAME} 
 
-          download_themeswitch() {
-            local REPO_NAME="luci-app-themeswitch"
-            echo "--> Attempting to download ${REPO_NAME}..."
+            echo "--> Searching for package '${PKG_NAME_BASE}' in repo '${REPO_NAME}'..."
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
             local API_RESPONSE=$(curl -sL "$API_URL")
             
             if ! echo "${API_RESPONSE}" | jq -e '.tag_name' > /dev/null; then
-              echo "::warning::Could not fetch latest release for ${REPO_NAME}. Skipping themeswitch."
-              return
+              echo "::warning::Could not fetch latest release for ${REPO_NAME}. Skipping package."
+              return 1
             fi
 
             local LATEST_VERSION=$(echo "${API_RESPONSE}" | jq -r '.tag_name')
             local IPK_URL=""
-            
-            # First, try to find an architecture-specific package
-            local ARCH_PKG_FILENAME="luci-app-themeswitch_${LATEST_VERSION}_${{ env.TARGET_ARCH }}.ipk"
-            IPK_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ARCH_PKG_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
+            local FOUND_FILENAME=""
 
-            # If not found, try to find an 'all' package as a fallback
-            if [ -z "$IPK_URL" ] || [ "$IPK_URL" == "null" ]; then
-              local ALL_PKG_FILENAME="luci-app-themeswitch_${LATEST_VERSION}_all.ipk"
-              IPK_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ALL_PKG_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
+            # Priority 1: Find 'all' package (most common for LuCI apps)
+            local ALL_PKG_FILENAME="${PKG_NAME_BASE}_${LATEST_VERSION}_all.ipk"
+            IPK_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ALL_PKG_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
+            
+            if [ -n "$IPK_URL" ] && [ "$IPK_URL" != "null" ]; then
+              FOUND_FILENAME=$ALL_PKG_FILENAME
+            else
+              # Priority 2: Fallback to architecture-specific package
+              local ARCH_PKG_FILENAME="${PKG_NAME_BASE}_${LATEST_VERSION}_${{ env.TARGET_ARCH }}.ipk"
+              IPK_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ARCH_PKG_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
+              if [ -n "$IPK_URL" ] && [ "$IPK_URL" != "null" ]; then
+                FOUND_FILENAME=$ARCH_PKG_FILENAME
+              fi
             fi
 
-            if [ -n "$IPK_URL" ] && [ "$IPK_URL" != "null" ]; then
+            if [ -n "$FOUND_FILENAME" ]; then
               wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
-              echo "--> Successfully downloaded themeswitch package."
+              echo "--> Successfully downloaded ${FOUND_FILENAME}"
+              return 0 # Success
             else
-              echo "::warning::Could not find a compatible 'luci-app-themeswitch' package for arch '${{ env.TARGET_ARCH }}' or 'all'. It will be excluded from the build."
+              echo "::warning::Could not find a compatible '${PKG_NAME_BASE}' package for arch '${{ env.TARGET_ARCH }}' or 'all'."
+              return 1 # Failure
             fi
           }
 
           download_passwall_bundle() {
-            local PASSWALL_REPO="$1"
-            echo "--> Attempting to download package and dependency bundle for ${PASSWALL_REPO}..."
-            download_latest_ipk "${PASSWALL_REPO}"
-            local API_URL="https://api.github.com/repos/peditx/${PASSWALL_REPO}/releases/latest"
+            local REPO_NAME="$1"
+            local PKG_NAME_BASE="$2"
+            echo "--> Preparing bundle for ${PKG_NAME_BASE}..."
+            
+            # Download the main LuCI package using the robust function
+            download_release_ipk "${REPO_NAME}" "${PKG_NAME_BASE}"
+            
+            # Download the architecture-specific dependency bundle
+            local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
             local API_RESPONSE=$(curl -sL "$API_URL")
             if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
               local ZIP_FILENAME="passwall_packages_ipk_${{ env.TARGET_ARCH }}.zip"
               local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
-              if [ -n "$ZIP_URL" ]; then
+              if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
                 wget -q "${ZIP_URL}" -O dependencies.zip
                 unzip -qo dependencies.zip -d "${CUSTOM_PKG_DIR}"
                 rm dependencies.zip
-                echo "--> Successfully downloaded dependency bundle for ${PASSWALL_REPO}"
+                echo "--> Successfully downloaded dependency bundle for ${PKG_NAME_BASE}"
               else
-                echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO} (arch: ${{ env.TARGET_ARCH }})."
+                echo "::warning::Could not find dependency bundle for ${PKG_NAME_BASE} (arch: ${{ env.TARGET_ARCH }})."
               fi
             else
-                echo "::warning::Could not find a valid release for ${PASSWALL_REPO} to get dependency bundle."
+                echo "::warning::Could not find a valid release for ${REPO_NAME} to get dependency bundle."
             fi
           }
 
-          # Download both themes and the themeswitch app
-          download_latest_ipk "luci-theme-peditx"
-          download_latest_ipk "luci-theme-carbonpx"
-          download_themeswitch
+          # Download themes and themeswitch
+          download_release_ipk "luci-theme-peditx"
+          download_release_ipk "luci-theme-carbonpx"
+          download_release_ipk "luci-app-themeswitch"
           
+          # Download extra packages if selected
           for pkg in ${{ github.event.inputs.extra_packages }}; do
             if [[ "$pkg" == "luci-app-passwall" ]]; then
-              download_passwall_bundle "openwrt-passwall"
+              download_passwall_bundle "openwrt-passwall" "luci-app-passwall"
             fi
             if [[ "$pkg" == "luci-app-passwall2" ]]; then
-              download_passwall_bundle "openwrt-passwall2"
+              download_passwall_bundle "openwrt-passwall2" "luci-app-passwall2"
             fi
           done
     
@@ -281,6 +282,9 @@ jobs:
         run: |
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
+
+          echo "--> Forcing a package index refresh to include local IPKs..."
+          make package_index V=s
           
           # Determine device category for fine-tuned package selection
           IS_VERY_LIMITED_FLASH=false
