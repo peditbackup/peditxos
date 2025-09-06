@@ -351,7 +351,7 @@ jobs:
           fi
           
           # Assemble the final list of all packages
-          ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq ${FINAL_EXTRA_PACKAGES}"
+          ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq dnsmasq-full ${FINAL_EXTRA_PACKAGES}"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
