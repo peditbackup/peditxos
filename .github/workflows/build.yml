@@ -295,7 +295,7 @@ jobs:
           case "${{ github.event.inputs.device_profile }}" in
             *archer-a7-v5|*archer-c7-v5|*tl-wdr4300*|*tl-wr1043nd*|*wrt160nl*|*dir-860l-b1*)
               APPLY_LOW_FLASH_RESTRICTIONS=true
-              echo "::notice::Device with limited flash (<60MB) detected. Applying package restrictions."
+              echo "::notice::Device with limited flash (<60MB) detected. Applying aggressive package restrictions."
               ;;
           esac
 
@@ -312,8 +312,12 @@ jobs:
             
             # Rule 1: Remove all theme packages (overwrites previous change if necessary)
             THEME_PACKAGES=""
+
+            # Rule 2: Remove some non-essential but large base packages to save space
+            echo "::notice::Removing non-essential base packages (screen, sshpass, ttyd) to free up space."
+            BASE_PACKAGES=$(echo "$BASE_PACKAGES" | sed 's/screen//g' | sed 's/sshpass//g' | sed 's/luci-app-ttyd//g')
             
-            # Rule 2: If passwall2 is selected, it gets priority over other heavy packages.
+            # Rule 3: If passwall2 is selected, it gets priority over other heavy packages.
             if [[ " ${FINAL_EXTRA_PACKAGES} " =~ " luci-app-passwall2 " ]]; then
               echo "::notice::Prioritizing luci-app-passwall2. Removing other conflicting heavy packages."
               KEPT_PACKAGES=""
