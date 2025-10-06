@@ -273,7 +273,7 @@ jobs:
           
           # --- Smart Package Selection Logic ---
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
-          BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils coreutils-base64 coreutils-nohup"
+          BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup"
           FINAL_EXTRA_PACKAGES="${{ github.event.inputs.extra_packages }}"
 
           # --- Determine if package restrictions should be applied ---
