@@ -49,6 +49,10 @@ jobs:
     name: Build Firmware
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
     steps:
       - name: 'Checkout Repository'
         uses: actions/checkout@v4
@@ -88,6 +92,7 @@ jobs:
           FILES_DIR="${{ github.workspace }}/files"
           mkdir -p "${FILES_DIR}/etc"
           
+          # --- Branding Strategy ---
           cat << EOF > "${FILES_DIR}/etc/os-release"
           NAME='PeDitXOS'
           VERSION='${{ github.event.inputs.openwrt_version }}'
@@ -105,6 +110,7 @@ jobs:
           EOF
           echo "--- Display-only branded os-release file generated ---"
 
+          # --- Create custom feeds ---
           OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
           TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
           CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
@@ -116,6 +122,7 @@ jobs:
           done
           echo "--- Custom feeds file generated ---"
 
+          # --- Create UCI Defaults Script ---
           UCI_SCRIPT_DIR="${FILES_DIR}/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
@@ -129,6 +136,7 @@ jobs:
           rm /tmp/passwall.pub
           EOF_SCRIPT
 
+          # UCI settings
           THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
@@ -188,7 +196,7 @@ jobs:
             local REPO_NAME="luci-app-themeswitch"
             echo "--> Attempting to download ${REPO_NAME} for arch ${{ env.TARGET_ARCH }}..."
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
-            local API_RESPONSE=$(curl -sL --fail "$API_URL") || { echo "::error::Failed to fetch latest release for ${REPO_NAME}."; exit 1; }
+            local API_RESPONSE=$(curl -sL --fail "$API_URL") || { echo "::error::Failed to fetch latest release."; exit 1; }
 
             if echo "${API_RESPONSE}" | jq -e '.tag_name' > /dev/null; then
               local LATEST_VERSION=$(echo "${API_RESPONSE}" | jq -r '.tag_name')
@@ -199,7 +207,7 @@ jobs:
                 wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
                 echo "--> Successfully downloaded ${PKG_FILENAME}"
               else
-                echo "::error::Could not find ${PKG_FILENAME} in the latest release. Please check if a package for architecture '${{ env.TARGET_ARCH }}' exists."
+                echo "::error::Could not find ${PKG_FILENAME} in the latest release."
                 exit 1
               fi
             else
@@ -210,23 +218,23 @@ jobs:
 
           download_passwall_bundle() {
             local PASSWALL_REPO="$1"
-            echo "--> Attempting to download package and dependency bundle for ${PASSWALL_REPO}..."
+            echo "--> Attempting to download dependency bundle for ${PASSWALL_REPO}..."
             download_latest_ipk "${PASSWALL_REPO}"
             local API_URL="https://api.github.com/repos/peditx/${PASSWALL_REPO}/releases/latest"
             local API_RESPONSE=$(curl -sL "$API_URL")
             if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
               local ZIP_FILENAME="passwall_packages_ipk_${{ env.TARGET_ARCH }}.zip"
               local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
-              if [ -n "$ZIP_URL" ]; then
+              if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
                 wget -q "${ZIP_URL}" -O dependencies.zip
                 unzip -qo dependencies.zip -d "${CUSTOM_PKG_DIR}"
                 rm dependencies.zip
                 echo "--> Successfully downloaded dependency bundle for ${PASSWALL_REPO}"
               else
-                echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO} (arch: ${{ env.TARGET_ARCH }})."
+                echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO}."
               fi
             else
-                echo "::warning::Could not find a valid release for ${PASSWALL_REPO} to get dependency bundle."
+                echo "::warning::Could not find a valid release for ${PASSWALL_REPO}."
             fi
           }
 
@@ -251,21 +259,21 @@ jobs:
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
           
+          # --- Smart Package Selection Logic ---
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup"
           FINAL_EXTRA_PACKAGES="${{ github.event.inputs.extra_packages }}"
 
           APPLY_LOW_FLASH_RESTRICTIONS=false
-          
           if [[ "${{ github.event.inputs.device_target }}" == "x86/generic" ]]; then
-            echo "::notice::Legacy x86 target detected. Removing luci-app-themeswitch."
+            echo "::notice::Legacy x86 target detected. Removing themeswitch."
             THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx"
           fi
 
           case "${{ github.event.inputs.device_profile }}" in
             *archer-a7-v5|*archer-c7-v5|*tl-wdr4300*|*tl-wr1043nd*|*wrt160nl*|*dir-860l-b1*)
               APPLY_LOW_FLASH_RESTRICTIONS=true
-              echo "::notice::Device with limited flash (<60MB) detected. Applying aggressive package restrictions."
+              echo "::notice::Device with limited flash detected. Applying restrictions."
               ;;
           esac
 
@@ -278,11 +286,11 @@ jobs:
 
           if [[ "$APPLY_LOW_FLASH_RESTRICTIONS" == "true" ]]; then
             THEME_PACKAGES=""
-            echo "::notice::Removing non-essential base packages (screen, sshpass, ttyd) to free up space."
+            echo "::notice::Removing non-essential base packages to free up space."
             BASE_PACKAGES=$(echo "$BASE_PACKAGES" | sed 's/screen//g' | sed 's/sshpass//g' | sed 's/luci-app-ttyd//g')
             
             if [[ " ${FINAL_EXTRA_PACKAGES} " =~ " luci-app-passwall2 " ]]; then
-              echo "::notice::Prioritizing luci-app-passwall2. Removing other conflicting heavy packages."
+              echo "::notice::Prioritizing luci-app-passwall2. Removing other heavy packages."
               KEPT_PACKAGES=""
               for pkg in ${FINAL_EXTRA_PACKAGES}; do
                 case "$pkg" in
@@ -305,7 +313,7 @@ jobs:
             done
             
             if (( HEAVY_PKG_COUNT > 2 )); then
-              echo "::warning::More than 2 heavy packages selected for an SBC. Ignoring luci-app-wol and luci-app-smartdns to save space."
+              echo "::warning::More than 2 heavy packages selected. Pruning luci-app-wol/smartdns."
               FINAL_EXTRA_PACKAGES=$(echo "$FINAL_EXTRA_PACKAGES" | sed 's/luci-app-wol//g' | sed 's/luci-app-smartdns//g')
             fi
           fi
@@ -313,11 +321,9 @@ jobs:
           ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq dnsmasq-full ${FINAL_EXTRA_PACKAGES}"
           
           if [[ "${{ github.event.inputs.device_target }}" == "x86/64" || "${{ github.event.inputs.device_target }}" == "x86/generic" || "$IS_NON_X86_SBC" == "true" ]]; then
-            echo "x86 or SBC target detected. Forcing RootFS size to 512MB in .config"
+            echo "x86 or SBC target. Forcing RootFS to 512MB."
             sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
             echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
-          else
-            echo "Using default RootFS size for the profile."
           fi
           
           make image PROFILE="${{ github.event.inputs.device_profile }}" \
@@ -335,7 +341,6 @@ jobs:
       - name: 'List Output Directory Contents'
         if: always()
         run: |
-          echo "--- Listing contents of output directory ---"
           ls -R ${{ github.workspace }}/output
 
       - name: 'Organize, Rename, and Compress Files'
@@ -374,19 +379,13 @@ jobs:
           elif [[ -n $(find . -name "*vhdx*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*vhdx*" | head -n 1)
           fi
 
-          if [ -z "$PRIMARY_IMAGE" ]; then
-            echo "::error::No primary flashable image found!"
-            exit 1
-          fi
-          echo "Primary image found: ${PRIMARY_IMAGE}"
-          
+          if [ -z "$PRIMARY_IMAGE" ]; then exit 1; fi
           for f in openwrt-*; do mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
           rm -f *.json
 
           TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
           ARCHIVE_NAME="PeDitXOS-${{ github.event.inputs.device_profile }}-${TIMESTAMP}.zip"
           zip -r "${ARCHIVE_NAME}" .
-          
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
           echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_OUTPUT
 
@@ -400,34 +399,20 @@ jobs:
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
-          
-          REMOTE_BASE_DIR="/home/frs/project/${SF_PROJECT_NAME}/users"
-          REMOTE_UPLOAD_DIR="${REMOTE_BASE_DIR}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
-          LOCAL_FILE_PATH="${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
-
-          lftp -c "
-          set sftp:connect-program 'ssh -a -x -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes';
-          open -u ${SF_USERNAME}, sftp://frs.sourceforge.net;
-          mkdir -p ${REMOTE_UPLOAD_DIR};
-          cd ${REMOTE_UPLOAD_DIR};
-          put ${LOCAL_FILE_PATH};
-          bye;
-          "
+          REMOTE_DIR="/home/frs/project/${SF_PROJECT_NAME}/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
+          lftp -c "set sftp:connect-program 'ssh -a -x -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes'; open -u ${SF_USERNAME}, sftp://frs.sourceforge.net; mkdir -p ${REMOTE_DIR}; cd ${REMOTE_DIR}; put ${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}; bye"
           rm -f ~/.ssh/id_rsa
 
       - name: 'Report Result to PeDitXOS Backend'
         if: always()
         run: |
           STATUS="failed"
-          if [ "${{ job.status }}" == "success" ]; then
-            STATUS="completed"
-          fi
-          
+          if [ "${{ job.status }}" == "success" ]; then STATUS="completed"; fi
           DOWNLOAD_URL=""
           if [ "$STATUS" == "completed" ]; then
             DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
           fi
-
+          
           curl -X POST "https://firmware.peditxos.ir/api/build/update-status" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_PAT }}" \
