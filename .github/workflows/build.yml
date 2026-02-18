@@ -464,7 +464,8 @@ jobs:
             DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
           fi
           
-          curl -X POST "https://firmware.peditxos.ir/api/build/update-status" \
+          # UPDATED URL to allow access despite Apache folder conflict
+          curl -X POST "https://firmware.peditxos.ir/api/github-status" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_PAT }}" \
             -d "{
