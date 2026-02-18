@@ -177,6 +177,7 @@ jobs:
           download_latest_ipk() {
             local REPO_NAME="$1"
             if [ -z "$REPO_NAME" ]; then return; fi
+            echo "--> Attempting to download ${REPO_NAME}..."
             local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
             local API_RESPONSE=$(curl -sL "$API_URL")
             if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
@@ -320,10 +321,15 @@ jobs:
           
           ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq dnsmasq-full ${FINAL_EXTRA_PACKAGES}"
           
+          echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
+          echo "Final Packages: ${ALL_PACKAGES}"
+          
           if [[ "${{ github.event.inputs.device_target }}" == "x86/64" || "${{ github.event.inputs.device_target }}" == "x86/generic" || "$IS_NON_X86_SBC" == "true" ]]; then
             echo "x86 or SBC target. Forcing RootFS to 512MB."
             sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
             echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
+          else
+            echo "Using default RootFS size for the profile."
           fi
           
           make image PROFILE="${{ github.event.inputs.device_profile }}" \
@@ -341,6 +347,7 @@ jobs:
       - name: 'List Output Directory Contents'
         if: always()
         run: |
+          echo "--- Listing contents of output directory ---"
           ls -R ${{ github.workspace }}/output
 
       - name: 'Organize, Rename, and Compress Files'
@@ -353,33 +360,61 @@ jobs:
           fi
           
           PRIMARY_IMAGE=""
-          if [[ -n $(find . -name "*sysupgrade.itb*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*sysupgrade.itb*" | head -n 1)
-          elif [[ -n $(find . -name "*sysupgrade.bin*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*sysupgrade.bin*" | head -n 1)
-          elif [[ -n $(find . -name "*sysupgrade.img*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*sysupgrade.img*" | head -n 1)
-          elif [[ -n $(find . -name "*sysupgrade.img.gz*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*sysupgrade.img.gz*" | head -n 1)
-          elif [[ -n $(find . -name "*squashfs-sysupgrade.bin*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*squashfs-sysupgrade.bin*" | head -n 1)
-          elif [[ -n $(find . -name "*ext4-sysupgrade.img.gz*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*ext4-sysupgrade.img.gz*" | head -n 1)
-          elif [[ -n $(find . -name "*nand-sysupgrade.bin*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*nand-sysupgrade.bin*" | head -n 1)
-          elif [[ -n $(find . -name "*ubi-sysupgrade.img*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*ubi-sysupgrade.img*" | head -n 1)
-          elif [[ -n $(find . -name "*trx*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*trx*" | head -n 1)
-          elif [[ -n $(find . -name "*chk*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*chk*" | head -n 1)
-          elif [[ -n $(find . -name "*tar*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*tar*" | head -n 1)
-          elif [[ -n $(find . -name "*ubi*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*ubi*" | head -n 1)
-          elif [[ -n $(find . -name "*ubifs*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*ubifs*" | head -n 1)
-          elif [[ -n $(find . -name "*ext4*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*ext4*" | head -n 1)
-          elif [[ -n $(find . -name "*sdcard.img.gz*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*sdcard.img.gz*" | head -n 1)
-          elif [[ -n $(find . -name "*sdcard.img.xz*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*sdcard.img.xz*" | head -n 1)
-          elif [[ -n $(find . -name "*factory.bin*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*factory.bin*" | head -n 1)
-          elif [[ -n $(find . -name "*factory.img*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*factory.img*" | head -n 1)
-          elif [[ -n $(find . -name "*sdimg*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*sdimg*" | head -n 1)
-          elif [[ -n $(find . -name "*wic*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*wic*" | head -n 1)
-          elif [[ -n $(find . -name "*vdi*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*vdi*" | head -n 1)
-          elif [[ -n $(find . -name "*vmdk*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*vmdk*" | head -n 1)
-          elif [[ -n $(find . -name "*qcow2*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*qcow2*" | head -n 1)
-          elif [[ -n $(find . -name "*vhdx*" | head -n 1) ]]; then PRIMARY_IMAGE=$(find . -name "*vhdx*" | head -n 1)
+          if [[ -n $(find . -name "*sysupgrade.itb*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sysupgrade.itb*" | head -n 1)
+          elif [[ -n $(find . -name "*sysupgrade.bin*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sysupgrade.bin*" | head -n 1)
+          elif [[ -n $(find . -name "*sysupgrade.img*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sysupgrade.img*" | head -n 1)
+          elif [[ -n $(find . -name "*sysupgrade.img.gz*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sysupgrade.img.gz*" | head -n 1)
+          elif [[ -n $(find . -name "*squashfs-sysupgrade.bin*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*squashfs-sysupgrade.bin*" | head -n 1)
+          elif [[ -n $(find . -name "*ext4-sysupgrade.img.gz*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*ext4-sysupgrade.img.gz*" | head -n 1)
+          elif [[ -n $(find . -name "*nand-sysupgrade.bin*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*nand-sysupgrade.bin*" | head -n 1)
+          elif [[ -n $(find . -name "*ubi-sysupgrade.img*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*ubi-sysupgrade.img*" | head -n 1)
+          elif [[ -n $(find . -name "*trx*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*trx*" | head -n 1)
+          elif [[ -n $(find . -name "*chk*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*chk*" | head -n 1)
+          elif [[ -n $(find . -name "*tar*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*tar*" | head -n 1)
+          elif [[ -n $(find . -name "*ubi*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*ubi*" | head -n 1)
+          elif [[ -n $(find . -name "*ubifs*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*ubifs*" | head -n 1)
+          elif [[ -n $(find . -name "*ext4*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*ext4*" | head -n 1)
+          elif [[ -n $(find . -name "*sdcard.img.gz*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sdcard.img.gz*" | head -n 1)
+          elif [[ -n $(find . -name "*sdcard.img.xz*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sdcard.img.xz*" | head -n 1)
+          elif [[ -n $(find . -name "*factory.bin*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*factory.bin*" | head -n 1)
+          elif [[ -n $(find . -name "*factory.img*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*factory.img*" | head -n 1)
+          elif [[ -n $(find . -name "*sdimg*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*sdimg*" | head -n 1)
+          elif [[ -n $(find . -name "*wic*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*wic*" | head -n 1)
+          elif [[ -n $(find . -name "*vdi*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*vdi*" | head -n 1)
+          elif [[ -n $(find . -name "*vmdk*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*vmdk*" | head -n 1)
+          elif [[ -n $(find . -name "*qcow2*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*qcow2*" | head -n 1)
+          elif [[ -n $(find . -name "*vhdx*" | head -n 1) ]]; then
+            PRIMARY_IMAGE=$(find . -name "*vhdx*" | head -n 1)
           fi
 
-          if [ -z "$PRIMARY_IMAGE" ]; then exit 1; fi
+          if [ -z "$PRIMARY_IMAGE" ]; then
+            echo "::error::No primary flashable image found!"
+            exit 1
+          fi
+          echo "Primary image found: ${PRIMARY_IMAGE}"
           for f in openwrt-*; do mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
           rm -f *.json
 
@@ -399,9 +434,25 @@ jobs:
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
-          REMOTE_DIR="/home/frs/project/${SF_PROJECT_NAME}/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
-          lftp -c "set sftp:connect-program 'ssh -a -x -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes'; open -u ${SF_USERNAME}, sftp://frs.sourceforge.net; mkdir -p ${REMOTE_DIR}; cd ${REMOTE_DIR}; put ${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}; bye"
+          
+          REMOTE_BASE_DIR="/home/frs/project/${SF_PROJECT_NAME}/users"
+          REMOTE_UPLOAD_DIR="${REMOTE_BASE_DIR}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
+          LOCAL_FILE_PATH="${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
+
+          echo "Connecting to sftp://frs.sourceforge.net as user ${SF_USERNAME}"
+          echo "Remote directory to create: ${REMOTE_UPLOAD_DIR}"
+          echo "Local file to upload: ${LOCAL_FILE_PATH}"
+          
+          lftp -c "
+          set sftp:connect-program 'ssh -a -x -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes';
+          open -u ${SF_USERNAME}, sftp://frs.sourceforge.net;
+          mkdir -p ${REMOTE_UPLOAD_DIR};
+          cd ${REMOTE_UPLOAD_DIR};
+          put ${LOCAL_FILE_PATH};
+          bye;
+          "
           rm -f ~/.ssh/id_rsa
+          echo "Upload complete."
 
       - name: 'Report Result to PeDitXOS Backend'
         if: always()
