@@ -93,26 +93,16 @@ jobs:
           FILES_DIR="${{ github.workspace }}/files"
           mkdir -p "${FILES_DIR}/etc"
           
-          # --- Create custom opkg config for the final image ---
-          cat << 'EOF_OPKG_CONF' > "${FILES_DIR}/etc/opkg.conf"
-          dest root /
-          dest ram /tmp
-          lists_dir ext /var/opkg-lists
-          option overlay_root /overlay
-          # option check_signature
-          EOF_OPKG_CONF
-          
-          # --- Create custom distfeeds for the final image ---
-          mkdir -p "${FILES_DIR}/etc/opkg"
-          cat "${IMAGEBUILDER_DIR}/repositories.conf" | grep "^src/gz" | sed 's|https://downloads.openwrt.org|http://peditxrepo.ir/openwrt|g' | sed 's|http://downloads.openwrt.org|http://peditxrepo.ir/openwrt|g' > "${FILES_DIR}/etc/opkg/distfeeds.conf"
-          
           # --- Create custom feeds for Passwall ---
           OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
           TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
-          CUSTOM_FEEDS_FILE="${FILES_DIR}/etc/opkg/customfeeds.conf"
+          CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
+          mkdir -p "${CUSTOM_FEEDS_DIR}"
+          CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
           BASE_URL="http://peditxrepo.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
           
-          echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" > "${CUSTOM_FEEDS_FILE}"
+          echo "# PeDitXOS Custom Feeds" > "${CUSTOM_FEEDS_FILE}"
+          echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" >> "${CUSTOM_FEEDS_FILE}"
           echo "src/gz peditxos_passwall_pkgs $BASE_URL/passwall_packages" >> "${CUSTOM_FEEDS_FILE}"
           echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "${CUSTOM_FEEDS_FILE}"
           echo "--- Custom feeds generated ---"
@@ -143,7 +133,18 @@ jobs:
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
           cat << 'EOF_SCRIPT' >> "${UCI_SCRIPT_PATH}"
-          # Add new opkg key for PeDitXOS Passwall
+          # 1. Safely disable signature check in opkg.conf without overwriting arch lists
+          if [ -f /etc/opkg.conf ]; then
+            sed -i 's/option check_signature/# option check_signature/g' /etc/opkg.conf
+          fi
+
+          # 2. Proxy OpenWrt original distfeeds
+          if [ -f /etc/opkg/distfeeds.conf ]; then
+            sed -i 's|https://downloads.openwrt.org|http://peditxrepo.ir/openwrt|g' /etc/opkg/distfeeds.conf
+            sed -i 's|http://downloads.openwrt.org|http://peditxrepo.ir/openwrt|g' /etc/opkg/distfeeds.conf
+          fi
+
+          # 3. Add new opkg key for PeDitXOS Passwall
           wget -qO /tmp/passwall.pub http://peditxrepo.ir/openwrt-passwall-build/passwall.pub
           opkg-key add /tmp/passwall.pub > /dev/null 2>&1
           rm -f /tmp/passwall.pub
@@ -258,7 +259,9 @@ jobs:
             download_themeswitch
           fi
           
-          for pkg in ${{ github.event.inputs.extra_packages }}; do
+          # Convert extra packages to lowercase to prevent mobile capitalization errors
+          EXTRA_PKGS_LOWER=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
+          for pkg in $EXTRA_PKGS_LOWER; do
             if [[ "$pkg" == "luci-app-passwall" ]]; then
               download_passwall_bundle "peditworker/PeDitXOS_Passwall"
             fi
@@ -276,7 +279,9 @@ jobs:
           # --- Smart Package Selection Logic ---
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup"
-          FINAL_EXTRA_PACKAGES="${{ github.event.inputs.extra_packages }}"
+          
+          # Convert all input packages to lowercase
+          FINAL_EXTRA_PACKAGES=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
 
           APPLY_LOW_FLASH_RESTRICTIONS=false
           if [[ "${{ github.event.inputs.device_target }}" == "x86/generic" ]]; then
@@ -332,7 +337,9 @@ jobs:
             fi
           fi
           
-          ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq dnsmasq-full ${FINAL_EXTRA_PACKAGES}"
+          # Assemble the final list of all packages
+          # Explicitly exclude sing-box and hysteria to prevent them from slipping in and taking up space
+          ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq dnsmasq-full ${FINAL_EXTRA_PACKAGES} -sing-box -hysteria"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
