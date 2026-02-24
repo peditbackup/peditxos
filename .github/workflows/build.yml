@@ -108,6 +108,14 @@ jobs:
           mkdir -p "${FILES_DIR}/etc/opkg"
           cat "${IMAGEBUILDER_DIR}/repositories.conf" | grep "^src/gz" | sed 's|https://downloads.openwrt.org|http://peditxrepo.ir/openwrt|g' | sed 's|http://downloads.openwrt.org|http://peditxrepo.ir/openwrt|g' > "${FILES_DIR}/etc/opkg/distfeeds.conf"
           
+          # --- Download Custom Bash Profile Scripts ---
+          mkdir -p "${FILES_DIR}/etc/profile.d"
+          wget -q https://raw.githubusercontent.com/peditx/PeDitXOs/refs/heads/main/.files/profile -O "${FILES_DIR}/etc/profile"
+          wget -q https://raw.githubusercontent.com/peditx/PeDitXOs/refs/heads/main/.files/30-sysinfo.sh -O "${FILES_DIR}/etc/profile.d/30-sysinfo.sh"
+          wget -q https://raw.githubusercontent.com/peditx/PeDitXOs/refs/heads/main/.files/sys_bashrc.sh -O "${FILES_DIR}/etc/profile.d/sys_bashrc.sh"
+          chmod +x "${FILES_DIR}/etc/profile.d/"*.sh
+          echo "--- Custom bash profiles downloaded ---"
+
           # --- Branding Strategy ---
           cat << EOF > "${FILES_DIR}/etc/os-release"
           NAME='PeDitXOS'
@@ -126,21 +134,6 @@ jobs:
           EOF
           echo "--- Display-only branded os-release file generated ---"
 
-          # --- Create custom feeds ---
-          OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
-          TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
-          CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
-          mkdir -p "${CUSTOM_FEEDS_DIR}"
-          CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
-          
-          BASE_URL="http://peditxrepo.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
-          
-          echo "# PeDitXOS Custom Feeds" > "${CUSTOM_FEEDS_FILE}"
-          echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" >> "${CUSTOM_FEEDS_FILE}"
-          echo "src/gz peditxos_passwall_pkgs $BASE_URL/passwall_packages" >> "${CUSTOM_FEEDS_FILE}"
-          echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "${CUSTOM_FEEDS_FILE}"
-          echo "--- Custom feeds file generated ---"
-
           # --- Create UCI Defaults Script ---
           UCI_SCRIPT_DIR="${FILES_DIR}/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
@@ -153,6 +146,9 @@ jobs:
           wget -qO /tmp/passwall.pub http://peditxrepo.ir/openwrt-passwall-build/passwall.pub
           opkg-key add /tmp/passwall.pub > /dev/null 2>&1
           rm -f /tmp/passwall.pub
+
+          # Change default shell to bash
+          sed -i 's|:/bin/ash|:/bin/bash|g' /etc/passwd
           EOF_SCRIPT
 
           # UCI settings
@@ -194,28 +190,28 @@ jobs:
           mkdir -p "${CUSTOM_PKG_DIR}"
           
           download_latest_ipk() {
-            local REPO_NAME="$1"
-            if [ -z "$REPO_NAME" ]; then return; fi
-            echo "--> Attempting to download ${REPO_NAME}..."
-            local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
+            local REPO_PATH="$1"
+            if [ -z "$REPO_PATH" ]; then return; fi
+            echo "--> Attempting to download ${REPO_PATH}..."
+            local API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
             local API_RESPONSE=$(curl -sL "$API_URL")
             if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
               local IPK_URL=$(echo "${API_RESPONSE}" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
               if [ -n "$IPK_URL" ] && [ "$IPK_URL" != "null" ]; then
                 wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
-                echo "--> Successfully downloaded ${REPO_NAME}"
+                echo "--> Successfully downloaded ${REPO_PATH}"
               else
-                echo "::warning::Found release for ${REPO_NAME}, but no .ipk file was found."
+                echo "::warning::Found release for ${REPO_PATH}, but no .ipk file was found."
               fi
             else
-              echo "::warning::Could not find a valid release for ${REPO_NAME}. Skipping."
+              echo "::warning::Could not find a valid release for ${REPO_PATH}. Skipping."
             fi
           }
 
           download_themeswitch() {
-            local REPO_NAME="luci-app-themeswitch"
-            echo "--> Attempting to download ${REPO_NAME} for arch ${{ env.TARGET_ARCH }}..."
-            local API_URL="https://api.github.com/repos/peditx/${REPO_NAME}/releases/latest"
+            local REPO_PATH="peditx/luci-app-themeswitch"
+            echo "--> Attempting to download ${REPO_PATH} for arch ${{ env.TARGET_ARCH }}..."
+            local API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
             local API_RESPONSE=$(curl -sL --fail "$API_URL") || { echo "::error::Failed to fetch latest release."; exit 1; }
 
             if echo "${API_RESPONSE}" | jq -e '.tag_name' > /dev/null; then
@@ -231,16 +227,16 @@ jobs:
                 exit 1
               fi
             else
-              echo "::error::Could not find a valid release tag for ${REPO_NAME}."
+              echo "::error::Could not find a valid release tag for ${REPO_PATH}."
               exit 1
             fi
           }
 
           download_passwall_bundle() {
-            local PASSWALL_REPO="$1"
-            echo "--> Attempting to download dependency bundle for ${PASSWALL_REPO}..."
-            download_latest_ipk "${PASSWALL_REPO}"
-            local API_URL="https://api.github.com/repos/peditx/${PASSWALL_REPO}/releases/latest"
+            local PASSWALL_REPO_PATH="$1"
+            echo "--> Attempting to download dependency bundle for ${PASSWALL_REPO_PATH}..."
+            download_latest_ipk "${PASSWALL_REPO_PATH}"
+            local API_URL="https://api.github.com/repos/${PASSWALL_REPO_PATH}/releases/latest"
             local API_RESPONSE=$(curl -sL "$API_URL")
             if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
               local ZIP_FILENAME="passwall_packages_ipk_${{ env.TARGET_ARCH }}.zip"
@@ -249,27 +245,27 @@ jobs:
                 wget -q "${ZIP_URL}" -O dependencies.zip
                 unzip -qo dependencies.zip -d "${CUSTOM_PKG_DIR}"
                 rm dependencies.zip
-                echo "--> Successfully downloaded dependency bundle for ${PASSWALL_REPO}"
+                echo "--> Successfully downloaded dependency bundle for ${PASSWALL_REPO_PATH}"
               else
-                echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO}."
+                echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO_PATH}."
               fi
             else
-                echo "::warning::Could not find a valid release for ${PASSWALL_REPO}."
+                echo "::warning::Could not find a valid release for ${PASSWALL_REPO_PATH}."
             fi
           }
 
-          download_latest_ipk "luci-theme-peditx"
-          download_latest_ipk "luci-theme-carbonpx"
+          download_latest_ipk "peditx/luci-theme-peditx"
+          download_latest_ipk "peditx/luci-theme-carbonpx"
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
             download_themeswitch
           fi
           
           for pkg in ${{ github.event.inputs.extra_packages }}; do
             if [[ "$pkg" == "luci-app-passwall" ]]; then
-              download_passwall_bundle "openwrt-passwall"
+              download_passwall_bundle "peditworker/PeDitXOS_Passwall"
             fi
             if [[ "$pkg" == "luci-app-passwall2" ]]; then
-              download_passwall_bundle "openwrt-passwall2"
+              download_passwall_bundle "peditworker/PeDitXOS_Passwall2"
             fi
           done
     
@@ -281,7 +277,8 @@ jobs:
           
           # --- Smart Package Selection Logic ---
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
-          BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup"
+          # Added 'bash' here instead of opkg install bash
+          BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup bash"
           FINAL_EXTRA_PACKAGES="${{ github.event.inputs.extra_packages }}"
 
           APPLY_LOW_FLASH_RESTRICTIONS=false
