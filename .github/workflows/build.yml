@@ -100,14 +100,23 @@ jobs:
           lists_dir ext /var/opkg-lists
           option overlay_root /overlay
           # option check_signature
-          option connect_timeout 20
-          option download_timeout 20
           EOF_OPKG_CONF
           
           # --- Create custom distfeeds for the final image ---
           mkdir -p "${FILES_DIR}/etc/opkg"
           cat "${IMAGEBUILDER_DIR}/repositories.conf" | grep "^src/gz" | sed 's|https://downloads.openwrt.org|http://peditxrepo.ir/openwrt|g' | sed 's|http://downloads.openwrt.org|http://peditxrepo.ir/openwrt|g' > "${FILES_DIR}/etc/opkg/distfeeds.conf"
           
+          # --- Create custom feeds for Passwall ---
+          OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
+          TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
+          CUSTOM_FEEDS_FILE="${FILES_DIR}/etc/opkg/customfeeds.conf"
+          BASE_URL="http://peditxrepo.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
+          
+          echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" > "${CUSTOM_FEEDS_FILE}"
+          echo "src/gz peditxos_passwall_pkgs $BASE_URL/passwall_packages" >> "${CUSTOM_FEEDS_FILE}"
+          echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "${CUSTOM_FEEDS_FILE}"
+          echo "--- Custom feeds generated ---"
+
           # --- Download Custom Bash Profile Scripts ---
           mkdir -p "${FILES_DIR}/etc/profile.d"
           wget -q https://raw.githubusercontent.com/peditx/PeDitXOs/refs/heads/main/.files/profile -O "${FILES_DIR}/etc/profile"
