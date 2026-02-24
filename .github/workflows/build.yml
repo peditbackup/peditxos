@@ -117,14 +117,6 @@ jobs:
           echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "${CUSTOM_FEEDS_FILE}"
           echo "--- Custom feeds generated ---"
 
-          # --- Download Custom Bash Profile Scripts ---
-          mkdir -p "${FILES_DIR}/etc/profile.d"
-          wget -q https://raw.githubusercontent.com/peditx/PeDitXOs/refs/heads/main/.files/profile -O "${FILES_DIR}/etc/profile"
-          wget -q https://raw.githubusercontent.com/peditx/PeDitXOs/refs/heads/main/.files/30-sysinfo.sh -O "${FILES_DIR}/etc/profile.d/30-sysinfo.sh"
-          wget -q https://raw.githubusercontent.com/peditx/PeDitXOs/refs/heads/main/.files/sys_bashrc.sh -O "${FILES_DIR}/etc/profile.d/sys_bashrc.sh"
-          chmod +x "${FILES_DIR}/etc/profile.d/"*.sh
-          echo "--- Custom bash profiles downloaded ---"
-
           # --- Branding Strategy ---
           cat << EOF > "${FILES_DIR}/etc/os-release"
           NAME='PeDitXOS'
@@ -155,9 +147,6 @@ jobs:
           wget -qO /tmp/passwall.pub http://peditxrepo.ir/openwrt-passwall-build/passwall.pub
           opkg-key add /tmp/passwall.pub > /dev/null 2>&1
           rm -f /tmp/passwall.pub
-
-          # Change default shell to bash
-          sed -i 's|:/bin/ash|:/bin/bash|g' /etc/passwd
           EOF_SCRIPT
 
           # UCI settings
@@ -286,8 +275,7 @@ jobs:
           
           # --- Smart Package Selection Logic ---
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
-          # Added 'bash' here instead of opkg install bash
-          BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup bash"
+          BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup"
           FINAL_EXTRA_PACKAGES="${{ github.event.inputs.extra_packages }}"
 
           APPLY_LOW_FLASH_RESTRICTIONS=false
