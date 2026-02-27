@@ -263,10 +263,10 @@ jobs:
           EXTRA_PKGS_LOWER=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
           for pkg in $EXTRA_PKGS_LOWER; do
             if [[ "$pkg" == "luci-app-passwall" ]]; then
-              download_passwall_bundle "peditworker/PeDitXOS_Passwall"
+              download_passwall_bundle "peditx/openwrt-passwall"
             fi
             if [[ "$pkg" == "luci-app-passwall2" ]]; then
-              download_passwall_bundle "peditworker/PeDitXOS_Passwall2"
+              download_passwall_bundle "peditx/openwrt-passwall2"
             fi
           done
     
