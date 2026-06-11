@@ -83,29 +83,87 @@ jobs:
           echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> $GITHUB_ENV
           TARGET_ARCH="${{ github.event.inputs.target_arch }}"
           echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
-          REPO_CONF_FILE="${IMAGEBUILDER_DIR}/repositories.conf"
-          sed -i 's/^option check_signature.*/option check_signature 0/' "${REPO_CONF_FILE}"
           
-          echo "--- Signature check disabled for ImageBuilder ---"
+          # Proxy all potential internal ImageBuilder source files to our custom repository server with correct path prefix (/openwrt)
+          find "${IMAGEBUILDER_DIR}" -type f \( -name "repositories.conf" -o -name "repositories" -o -name "apk.conf" \) 2>/dev/null | while read -r file; do
+            echo "Adjusting sources in: $file"
+            sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' "$file"
+            sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' "$file"
+            sed -i 's/^option check_signature.*/option check_signature 0/' "$file"
+          done
+
+          # Download and register the public custom key to all trusted key locations within ImageBuilder to bypass signature errors in APK builds
+          find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
+            echo "Adding custom signature key to: $dir"
+            wget -qO "$dir/passwall.rsa.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub
+          done
+          
+          echo "--- Signature check configurations and proxies initialized ---"
 
       - name: 'Prepare Custom Files and Scripts'
         run: |
           FILES_DIR="${{ github.workspace }}/files"
           mkdir -p "${FILES_DIR}/etc"
           
-          # --- Create custom feeds for Passwall ---
           OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
           TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
-          CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
-          mkdir -p "${CUSTOM_FEEDS_DIR}"
-          CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
-          BASE_URL="http://peditxrepo.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
+          VERSION_MAJOR=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1)
           
-          echo "# PeDitXOS Custom Feeds" > "${CUSTOM_FEEDS_FILE}"
-          echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" >> "${CUSTOM_FEEDS_FILE}"
-          echo "src/gz peditxos_passwall_pkgs $BASE_URL/passwall_packages" >> "${CUSTOM_FEEDS_FILE}"
-          echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "${CUSTOM_FEEDS_FILE}"
-          echo "--- Custom feeds generated ---"
+          # Safe dynamic integer evaluation for APK engine detection (Supports version >= 25 or snapshots)
+          if [ "$VERSION_MAJOR" -eq "$VERSION_MAJOR" ] 2>/dev/null; then
+            if [ "$VERSION_MAJOR" -ge 25 ]; then
+              IS_APK=true
+            else
+              IS_APK=false
+            fi
+          else
+            # Support for snapshot master branches which utilize APK manager
+            if [ "${{ github.event.inputs.openwrt_version }}" = "snapshot" ]; then
+              IS_APK=true
+            else
+              IS_APK=false
+            fi
+          fi
+          
+          if [ "$IS_APK" = "true" ]; then
+            PKG_EXT="apk"
+          else
+            PKG_EXT="ipk"
+          fi
+          
+          echo "IS_APK=${IS_APK}" >> $GITHUB_ENV
+          echo "PKG_EXT=${PKG_EXT}" >> $GITHUB_ENV
+          
+          # --- Create Custom Repositories / Feeds ---
+          if [ "$IS_APK" = "true" ]; then
+            # Generate APK repository feeds configuration aligning with repository.peditxos.ir layout
+            CUSTOM_REPOS_DIR="${FILES_DIR}/etc/apk"
+            mkdir -p "${CUSTOM_REPOS_DIR}"
+            CUSTOM_REPOS_FILE="${CUSTOM_REPOS_DIR}/repositories"
+            BASE_URL="http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
+            
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/base" > "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/luci" >> "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/packages" >> "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/routing" >> "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/telephony" >> "${CUSTOM_REPOS_FILE}"
+            echo "$BASE_URL/passwall_luci" >> "${CUSTOM_REPOS_FILE}"
+            echo "$BASE_URL/passwall_packages" >> "${CUSTOM_REPOS_FILE}"
+            echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
+            echo "--- APK repositories config generated ---"
+          else
+            # Generate legacy OPKG customfeeds configuration
+            CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
+            mkdir -p "${CUSTOM_FEEDS_DIR}"
+            CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
+            BASE_URL="http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
+            
+            echo "# PeDitXOS Custom Feeds" > "${CUSTOM_FEEDS_FILE}"
+            echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" >> "${CUSTOM_FEEDS_FILE}"
+            echo "src/gz peditxos_passwall_pkgs $BASE_URL/passwall_packages" >> "${CUSTOM_FEEDS_FILE}"
+            echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "${CUSTOM_FEEDS_FILE}"
+            echo "--- Custom OPKG feeds generated ---"
+          fi
 
           # --- Branding Strategy ---
           cat << EOF > "${FILES_DIR}/etc/os-release"
@@ -123,9 +181,9 @@ jobs:
           OPENWRT_TAINTS='no-all'
           OPENWRT_RELEASE='PeDitXOS (${{ github.event.inputs.openwrt_version }})'
           EOF
-          echo "--- Display-only branded os-release file generated ---"
+          echo "--- os-release file generated ---"
 
-          # --- Create UCI Defaults Script ---
+          # --- Create UCI Defaults Script with engine-adaptive fallback logic ---
           UCI_SCRIPT_DIR="${FILES_DIR}/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
@@ -133,21 +191,44 @@ jobs:
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
           cat << 'EOF_SCRIPT' >> "${UCI_SCRIPT_PATH}"
-          # 1. Safely disable signature check in opkg.conf without overwriting arch lists
-          if [ -f /etc/opkg.conf ]; then
-            sed -i 's/option check_signature/# option check_signature/g' /etc/opkg.conf
+          # 1. Handle Legacy OPKG environment if detected
+          if [ -d /etc/opkg ]; then
+            if [ -f /etc/opkg.conf ]; then
+              sed -i 's/option check_signature/# option check_signature/g' /etc/opkg.conf
+            fi
+            if [ -f /etc/opkg/distfeeds.conf ]; then
+              sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/opkg/distfeeds.conf
+              sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/opkg/distfeeds.conf
+            fi
+            wget -qO /tmp/passwall.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub
+            opkg-key add /tmp/passwall.pub > /dev/null 2>&1
+            rm -f /tmp/passwall.pub
           fi
 
-          # 2. Proxy OpenWrt original distfeeds
-          if [ -f /etc/opkg/distfeeds.conf ]; then
-            sed -i 's|https://downloads.openwrt.org|http://peditxrepo.ir/openwrt|g' /etc/opkg/distfeeds.conf
-            sed -i 's|http://downloads.openwrt.org|http://peditxrepo.ir/openwrt|g' /etc/opkg/distfeeds.conf
+          # 2. Handle Modern APK (OpenWrt 25+) environment if detected
+          if [ -d /etc/apk ]; then
+            if [ -f /etc/apk/repositories ]; then
+              sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
+              sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
+              
+              # Safely append dynamic APK repositories fallback if needed
+              if ! grep -q "openwrt-passwall-build" /etc/apk/repositories 2>/dev/null; then
+                if [ -f /etc/openwrt_release ]; then
+                  . /etc/openwrt_release
+                  V_MAJOR=$(echo "$DISTRIB_RELEASE" | cut -d. -f1-2)
+                  V_ARCH="$DISTRIB_ARCH"
+                fi
+                if [ -n "$V_MAJOR" ] && [ -n "$V_ARCH" ]; then
+                  echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${V_MAJOR}/${V_ARCH}/passwall_packages" >> /etc/apk/repositories
+                  echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${V_MAJOR}/${V_ARCH}/passwall_luci" >> /etc/apk/repositories
+                  echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${V_MAJOR}/${V_ARCH}/passwall2" >> /etc/apk/repositories
+                fi
+              fi
+            fi
+            # Place signature keys properly into APK database
+            mkdir -p /etc/apk/keys
+            wget -qO /etc/apk/keys/passwall.rsa.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub > /dev/null 2>&1
           fi
-
-          # 3. Add new opkg key for PeDitXOS Passwall
-          wget -qO /tmp/passwall.pub http://peditxrepo.ir/openwrt-passwall-build/passwall.pub
-          opkg-key add /tmp/passwall.pub > /dev/null 2>&1
-          rm -f /tmp/passwall.pub
           EOF_SCRIPT
 
           # UCI settings
@@ -183,24 +264,25 @@ jobs:
           chmod +x "${UCI_SCRIPT_PATH}"
           echo "--- Custom UCI script generated ---"
 
-      - name: 'Download Custom IPK Packages'
+      - name: 'Download Custom Packages'
         run: |
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          download_latest_ipk() {
+          # Dynamic package downloader that supports both .apk and .ipk dynamically
+          download_latest_pkg() {
             local REPO_PATH="$1"
             if [ -z "$REPO_PATH" ]; then return; fi
-            echo "--> Attempting to download ${REPO_PATH}..."
+            echo "--> Attempting to download ${REPO_PATH} with extension .${{ env.PKG_EXT }}..."
             local API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
             local API_RESPONSE=$(curl -sL "$API_URL")
             if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
-              local IPK_URL=$(echo "${API_RESPONSE}" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
-              if [ -n "$IPK_URL" ] && [ "$IPK_URL" != "null" ]; then
-                wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
+              local PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | endswith($EXT)) | .browser_download_url' | head -n 1)
+              if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
+                wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}"
                 echo "--> Successfully downloaded ${REPO_PATH}"
               else
-                echo "::warning::Found release for ${REPO_PATH}, but no .ipk file was found."
+                echo "::warning::Found release for ${REPO_PATH}, but no .${{ env.PKG_EXT }} file was found."
               fi
             else
               echo "::warning::Could not find a valid release for ${REPO_PATH}. Skipping."
@@ -215,11 +297,11 @@ jobs:
 
             if echo "${API_RESPONSE}" | jq -e '.tag_name' > /dev/null; then
               local LATEST_VERSION=$(echo "${API_RESPONSE}" | jq -r '.tag_name')
-              local PKG_FILENAME="luci-app-themeswitch_${LATEST_VERSION}_${{ env.TARGET_ARCH }}.ipk"
-              local IPK_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${PKG_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
+              local PKG_FILENAME="luci-app-themeswitch_${LATEST_VERSION}_${{ env.TARGET_ARCH }}.${{ env.PKG_EXT }}"
+              local PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${PKG_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
 
-              if [ -n "$IPK_URL" ] && [ "$IPK_URL" != "null" ]; then
-                wget -q "$IPK_URL" -P "${CUSTOM_PKG_DIR}"
+              if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
+                wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}"
                 echo "--> Successfully downloaded ${PKG_FILENAME}"
               else
                 echo "::error::Could not find ${PKG_FILENAME} in the latest release."
@@ -234,11 +316,11 @@ jobs:
           download_passwall_bundle() {
             local PASSWALL_REPO_PATH="$1"
             echo "--> Attempting to download dependency bundle for ${PASSWALL_REPO_PATH}..."
-            download_latest_ipk "${PASSWALL_REPO_PATH}"
+            download_latest_pkg "${PASSWALL_REPO_PATH}"
             local API_URL="https://api.github.com/repos/${PASSWALL_REPO_PATH}/releases/latest"
             local API_RESPONSE=$(curl -sL "$API_URL")
             if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
-              local ZIP_FILENAME="passwall_packages_ipk_${{ env.TARGET_ARCH }}.zip"
+              local ZIP_FILENAME="passwall_packages_${{ env.PKG_EXT }}_${{ env.TARGET_ARCH }}.zip"
               local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
               if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
                 wget -q "${ZIP_URL}" -O dependencies.zip
@@ -253,8 +335,8 @@ jobs:
             fi
           }
 
-          download_latest_ipk "peditx/luci-theme-peditx"
-          download_latest_ipk "peditx/luci-theme-carbonpx"
+          download_latest_pkg "peditx/luci-theme-peditx"
+          download_latest_pkg "peditx/luci-theme-carbonpx"
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
             download_themeswitch
           fi
@@ -451,6 +533,7 @@ jobs:
           SF_PROJECT_NAME: ${{ secrets.SF_PROJECT_NAME }}
         run: |
           mkdir -p ~/.ssh
+          echo "${SSH_PRIVATE_KEY}" > ~/.rsa
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
