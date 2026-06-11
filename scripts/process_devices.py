@@ -10,7 +10,7 @@ import lzma
 # This is the most robust starting point: the main releases directory page.
 RELEASES_PAGE_URL = "https://downloads.openwrt.org/releases/"
 # We will support these major versions. The script will find the latest point release for each.
-SUPPORTED_MAJOR_VERSIONS = ["25.12", "24.10", "23.05", "22.03"]
+SUPPORTED_MAJOR_VERSIONS = ["25.12", "24.10", "23.05", "22.03", "21.02"]
 OUTPUT_FILE = "devices.json"
 
 class LinkFinder(HTMLParser):
