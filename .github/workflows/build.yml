@@ -422,48 +422,38 @@ jobs:
             fi
           done
 
-          # CRITICAL FIX: Use OpenWrt's own apk binary for indexing, NOT Alpine's apk
+          # CRITICAL FIX: Dynamically find and use OpenWrt's native host apk tool for flawless packages.adb generation
           if [ "$IS_APK" = "true" ]; then
-            echo "--> Initializing APK package index database using OpenWrt native apk..."
+            echo "--> Scanning ImageBuilder for native host apk binary..."
             cd "${CUSTOM_PKG_DIR}"
             
-            # Find OpenWrt's native apk binary inside staging_dir
             OWRT_APK=""
-            if [ -x "${{ env.IMAGEBUILDER_DIR }}/staging_dir/host/bin/apk" ]; then
-              OWRT_APK="${{ env.IMAGEBUILDER_DIR }}/staging_dir/host/bin/apk"
-            elif [ -x "${{ env.IMAGEBUILDER_DIR }}/staging_dir/target-*/host/bin/apk" ]; then
-              OWRT_APK=$(find "${{ env.IMAGEBUILDER_DIR }}/staging_dir" -name "apk" -path "*/host/bin/*" -executable | head -n 1)
-            fi
+            # Loop through all files named 'apk' with execute permissions inside ImageBuilder
+            for f in $(find "${{ github.workspace }}/imagebuilder" -type f -name "apk" -executable); do
+              # Test if the executable runs successfully on our runner to filter out target-arch binaries
+              if "$f" --version >/dev/null 2>&1; then
+                OWRT_APK="$f"
+                echo "--> Found valid host apk binary: $OWRT_APK"
+                break
+              fi
+            done
             
             if [ -n "$OWRT_APK" ] && [ -x "$OWRT_APK" ]; then
-              echo "Using OpenWrt native apk: $OWRT_APK"
               if ls *.apk &>/dev/null; then
-                echo "Indexing $(ls *.apk | wc -l) APK packages..."
-                "$OWRT_APK" index -o APKINDEX.tar.gz *.apk 2>/dev/null || echo "Warning: APKINDEX.tar.gz generation had issues"
-                "$OWRT_APK" index -o packages.adb *.apk 2>/dev/null || echo "Warning: packages.adb generation had issues"
+                echo "--> Indexing $(ls *.apk | wc -l) packages into APKINDEX.tar.gz and packages.adb..."
+                "$OWRT_APK" index -o APKINDEX.tar.gz *.apk
+                "$OWRT_APK" index -o packages.adb *.apk
               fi
             else
-              echo "::warning::OpenWrt native apk not found, falling back to host apk..."
-              # Fallback: create minimal valid empty adb if no native apk available
-              if ls *.apk &>/dev/null; then
-                apk index -o APKINDEX.tar.gz *.apk 2>/dev/null || true
-                apk index -o packages.adb *.apk 2>/dev/null || true
-              fi
-            fi
-            
-            # Final safety net: ensure packages.adb exists and is non-empty
-            if [ ! -f "packages.adb" ] || [ ! -s "packages.adb" ]; then
-              echo "::warning::packages.adb still invalid, creating minimal placeholder..."
-              # Create a minimal valid ADB by indexing nothing (prevents 'unexpected end of file')
-              touch dummy.apk
-              apk index -o packages.adb dummy.apk 2>/dev/null || printf '\x00' > packages.adb
-              rm -f dummy.apk
+              echo "::error::Could not find a valid runnable native host apk binary inside the ImageBuilder directory."
+              exit 1
             fi
             
             if [ -f "packages.adb" ] && [ -s "packages.adb" ]; then
-              echo "--> APK index ready ($(stat -c%s packages.adb) bytes)"
+              echo "--> APK index successfully created ($(stat -c%s packages.adb) bytes)"
             else
-              echo "::error::Failed to create valid packages.adb"
+              echo "::error::Failed to generate a valid non-empty packages.adb SQLite database"
+              exit 1
             fi
             cd -
           fi
