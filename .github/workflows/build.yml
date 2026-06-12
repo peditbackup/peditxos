@@ -153,7 +153,7 @@ jobs:
           TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
           VERSION_MAJOR=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1)
           
-          # Safe dynamic integer evaluation for APK engine detection (Supports version >= 25 or snapshots)
+          # Fixed evaluation logic: Systems utilizing modern APK engine are exclusively OpenWrt 25+ or snapshots
           if [ "$VERSION_MAJOR" -eq "$VERSION_MAJOR" ] 2>/dev/null; then
             if [ "$VERSION_MAJOR" -ge 25 ]; then
               IS_APK=true
@@ -161,7 +161,7 @@ jobs:
               IS_APK=false
             fi
           else
-            # Support for snapshot master branches which utilize APK manager
+            # Support for master snapshots branches which natively enforce APK core configurations
             if [ "${{ github.event.inputs.openwrt_version }}" = "snapshot" ]; then
               IS_APK=true
             else
@@ -646,12 +646,12 @@ jobs:
             DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
           fi
           
-          # UPDATED URL to allow access despite Apache folder conflict
+          # Clean payload mapping avoiding trailing character mutations on PostgreSQL instances
           curl -X POST "https://firmware.peditxos.ir/api/github-status" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_PAT }}" \
             -d "{
-              \"build_id\": \"./${{ github.event.inputs.build_id }}\",
+              \"build_id\": \"${{ github.event.inputs.build_id }}\",
               \"status\": \"$STATUS\",
               \"download_url\": \"$DOWNLOAD_URL\"
             }"
