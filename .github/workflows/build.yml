@@ -65,39 +65,37 @@ jobs:
           # Forcefully register the universe repository to guarantee package availability
           sudo add-apt-repository -y universe || true
           
-          # Attempt native installation of apk-tools, fallback to dynamic static binary on failure
-          sudo apt-get install -y apk-tools || {
-            echo "Native apk-tools failed, dynamically resolving official static compiled binary from Alpine..."
-            
-            # Try resolving from multiple stable Alpine releases (v3.20, v3.21, v3.19) using browser User-Agent
-            for version in "v3.20" "v3.21" "v3.19" "edge"; do
-              echo "Checking Alpine ${version} repository..."
-              HTML=$(curl -sL -A "Mozilla/5.0" "https://dl-cdn.alpinelinux.org/alpine/${version}/main/x86_64/")
-              APK_FILENAME=$(echo "$HTML" | grep -oE 'apk-tools-static-[0-9.]+-r[0-9]+\.apk' | head -n 1)
-              if [ -n "$APK_FILENAME" ]; then
-                APK_URL="https://dl-cdn.alpinelinux.org/alpine/${version}/main/x86_64/${APK_FILENAME}"
-                echo "Found static APK package: ${APK_FILENAME}"
-                break
-              fi
-            done
-            
-            if [ -z "$APK_URL" ]; then
-              echo "::error::Could not dynamically resolve apk-tools-static filename from Alpine mirrors."
-              exit 1
+          # Always resolve and download official static compiled apk-tools v3 from Alpine v3.21/edge
+          # This guarantees robust support for SQLite indexing (packages.adb) and all decompression formats (zstd, xz, gzip)
+          echo "Resolving official static compiled apk-tools v3 from Alpine..."
+          APK_URL=""
+          for version in "v3.21" "edge" "v3.20"; do
+            echo "Checking Alpine ${version} repository..."
+            HTML=$(curl -sL -A "Mozilla/5.0" "https://dl-cdn.alpinelinux.org/alpine/${version}/main/x86_64/")
+            APK_FILENAME=$(echo "$HTML" | grep -oE 'apk-tools-static-[0-9.]+-r[0-9]+\.apk' | head -n 1)
+            if [ -n "$APK_FILENAME" ]; then
+              APK_URL="https://dl-cdn.alpinelinux.org/alpine/${version}/main/x86_64/${APK_FILENAME}"
+              echo "Found static APK package: ${APK_FILENAME}"
+              break
             fi
-            
-            echo "Downloading static apk-tools from: $APK_URL"
-            wget -qO /tmp/apk-static.apk "$APK_URL"
-            
-            # Extract safely using tar -xf (which handles both gzip and zstd automatically)
-            tar -xf /tmp/apk-static.apk -C /tmp sbin/apk.static
-            sudo mv /tmp/sbin/apk.static /usr/bin/apk
-            sudo chmod +x /usr/bin/apk
-            rm -f /tmp/apk-static.apk
-          }
+          done
+          
+          if [ -z "$APK_URL" ]; then
+            echo "::error::Could not dynamically resolve apk-tools-static filename from Alpine mirrors."
+            exit 1
+          fi
+          
+          echo "Downloading static apk-tools from: $APK_URL"
+          wget -qO /tmp/apk-static.apk "$APK_URL"
+          
+          # Extract safely using tar
+          tar -xf /tmp/apk-static.apk -C /tmp sbin/apk.static
+          sudo mv /tmp/sbin/apk.static /usr/bin/apk
+          sudo chmod +x /usr/bin/apk
+          rm -f /tmp/apk-static.apk
           
           # Validate package management tool binary registration
-          apk --version || echo "Warning: local apk tool configuration finished with warnings"
+          /usr/bin/apk --version
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
         id: download_ib
@@ -141,6 +139,14 @@ jobs:
             mkdir -p "${IMAGEBUILDER_DIR}/etc/apk/keys"
             cp /tmp/passwall.pub "${IMAGEBUILDER_DIR}/etc/apk/keys/passwall.rsa.pub"
           fi
+          
+          # CRITICAL FIX: Replace any limited/broken host apk binaries inside the ImageBuilder directory with our guaranteed full-featured static apk-tools v3 binary
+          echo "--> Overriding any potentially limited/broken ImageBuilder host apk binaries..."
+          find "${IMAGEBUILDER_DIR}/staging_dir" -type f -name "apk" -executable 2>/dev/null | while read -r f; do
+            echo "Replacing host apk at: $f with fully-featured static version"
+            cp /usr/bin/apk "$f"
+            chmod +x "$f"
+          done
           
           echo "--- Signature check configurations and proxies initialized ---"
 
@@ -422,38 +428,23 @@ jobs:
             fi
           done
 
-          # CRITICAL FIX: Dynamically find and use OpenWrt's native host apk tool with --allow-untrusted flag
+          # CRITICAL FIX: Index downloaded APK packages using the highly-stable and official /usr/bin/apk static executable with --allow-untrusted flag.
+          # This totally prevents signature verification issues and "file format not supported" errors caused by broken host busybox clones.
           if [ "$IS_APK" = "true" ]; then
-            echo "--> Scanning ImageBuilder for native host apk binary..."
+            echo "--> Indexing local custom APK packages using official apk-tools v3..."
             cd "${CUSTOM_PKG_DIR}"
             
-            OWRT_APK=""
-            # Loop through all files named 'apk' with execute permissions inside ImageBuilder
-            for f in $(find "${{ github.workspace }}/imagebuilder" -type f -name "apk" -executable); do
-              # Test if the executable runs successfully on our runner to filter out target-arch binaries
-              if "$f" --version >/dev/null 2>&1; then
-                OWRT_APK="$f"
-                echo "--> Found valid host apk binary: $OWRT_APK"
-                break
-              fi
-            done
-            
-            if [ -n "$OWRT_APK" ] && [ -x "$OWRT_APK" ]; then
-              if ls *.apk &>/dev/null; then
-                echo "--> Indexing $(ls *.apk | wc -l) packages into APKINDEX.tar.gz and packages.adb (with trust flag)..."
-                # Added --allow-untrusted flag to safely index all custom packages bypass host verification errors
-                "$OWRT_APK" index --allow-untrusted -o APKINDEX.tar.gz *.apk
-                "$OWRT_APK" index --allow-untrusted -o packages.adb *.apk
-              fi
-            else
-              echo "::error::Could not find a valid runnable native host apk binary inside the ImageBuilder directory."
-              exit 1
+            if ls *.apk &>/dev/null; then
+              echo "--> Indexing $(ls *.apk | wc -l) packages into APKINDEX.tar.gz and packages.adb..."
+              /usr/bin/apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
+              /usr/bin/apk index --allow-untrusted -o packages.adb *.apk
             fi
             
+            # Verify the output database integrity
             if [ -f "packages.adb" ] && [ -s "packages.adb" ]; then
               echo "--> APK index successfully created ($(stat -c%s packages.adb) bytes)"
             else
-              echo "::error::Failed to generate a valid non-empty packages.adb SQLite database"
+              echo "::error::Failed to generate a valid packages.adb database"
               exit 1
             fi
             cd -
