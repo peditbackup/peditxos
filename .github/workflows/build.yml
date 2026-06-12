@@ -60,10 +60,29 @@ jobs:
       - name: 'Install Build Dependencies'
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp apk-tools
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
           
           # Forcefully register the universe repository to guarantee package availability
           sudo add-apt-repository -y universe || true
+          
+          # Download official stable static apk-tools v2 (2.14.x) from Alpine v3.20 to avoid apt-get Noble failure.
+          # This avoids seccomp/sandboxing IO errors introduced in newer apk versions on GitHub Actions runners.
+          echo "Resolving official static compiled apk-tools v2 from Alpine v3.20..."
+          HTML=$(curl -sL -A "Mozilla/5.0" "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/")
+          APK_FILENAME=$(echo "$HTML" | grep -oE 'apk-tools-static-[0-9.]+-r[0-9]+\.apk' | head -n 1)
+          if [ -n "$APK_FILENAME" ]; then
+            APK_URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/${APK_FILENAME}"
+            echo "Found static APK package: ${APK_FILENAME}"
+            wget -qO /tmp/apk-static.apk "$APK_URL"
+            tar -xf /tmp/apk-static.apk -C /tmp sbin/apk.static
+            sudo mv /tmp/sbin/apk.static /usr/local/bin/apk
+            sudo chmod +x /usr/local/bin/apk
+            rm -f /tmp/apk-static.apk
+            /usr/local/bin/apk --version
+          else
+            echo "::error::Could not resolve apk-tools-static dynamically"
+            exit 1
+          fi
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
         id: download_ib
@@ -361,16 +380,16 @@ jobs:
             fi
           done
 
-          # CRITICAL FIX: Safe offline local packages indexing using host compiled C-based apk-tools.
-          # This fully eliminates target BusyBox applet errors and sandbox permission issues.
+          # CRITICAL FIX: Safe offline local packages indexing using the verified, sandboxing-free static apk-tools.
+          # Installed in /usr/local/bin/apk, this avoids both format and sandboxing IO errors.
           if [ "$IS_APK" = "true" ]; then
-            echo "--> Indexing local custom APK packages with host utility..."
+            echo "--> Indexing local custom APK packages with stable host utility..."
             cd "${CUSTOM_PKG_DIR}"
             
             if ls *.apk &>/dev/null; then
               echo "--> Indexing $(ls *.apk | wc -l) packages into APKINDEX.tar.gz and packages.adb..."
-              /usr/bin/apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
-              /usr/bin/apk index --allow-untrusted -o packages.adb *.apk
+              /usr/local/bin/apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
+              /usr/local/bin/apk index --allow-untrusted -o packages.adb *.apk
               echo "--> APK index database successfully created!"
             else
               echo "::error::No local custom apk files found to index"
