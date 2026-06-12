@@ -84,7 +84,6 @@ jobs:
           TARGET_ARCH="${{ github.event.inputs.target_arch }}"
           echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
           
-          # Proxy all potential internal ImageBuilder source files to our custom repository server with correct path prefix (/openwrt)
           find "${IMAGEBUILDER_DIR}" -type f \( -name "repositories.conf" -o -name "repositories" -o -name "apk.conf" \) 2>/dev/null | while read -r file; do
             echo "Adjusting sources in: $file"
             sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' "$file"
@@ -92,7 +91,6 @@ jobs:
             sed -i 's/^option check_signature.*/option check_signature 0/' "$file"
           done
 
-          # Download and register the public custom key to all trusted key locations within ImageBuilder
           find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
             echo "Adding custom signature key to: $dir"
             wget -qO "$dir/passwall.rsa.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Warning: Custom key download failed, proceeding without key registration inside ImageBuilder"
@@ -109,31 +107,17 @@ jobs:
           TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
           VERSION_MAJOR=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1)
           
-          # Safe dynamic integer evaluation for APK engine detection (Supports version >= 25 or snapshots)
           if [ "$VERSION_MAJOR" -eq "$VERSION_MAJOR" ] 2>/dev/null; then
-            if [ "$VERSION_MAJOR" -ge 25 ]; then
-              IS_APK=true
-            else
-              IS_APK=false
-            fi
+            if [ "$VERSION_MAJOR" -ge 25 ]; then IS_APK=true; else IS_APK=false; fi
           else
-            if [ "${{ github.event.inputs.openwrt_version }}" = "snapshot" ]; then
-              IS_APK=true
-            else
-              IS_APK=false
-            fi
+            if [ "${{ github.event.inputs.openwrt_version }}" = "snapshot" ]; then IS_APK=true; else IS_APK=false; fi
           fi
           
-          if [ "$IS_APK" = "true" ]; then
-            PKG_EXT="apk"
-          else
-            PKG_EXT="ipk"
-          fi
+          if [ "$IS_APK" = "true" ]; then PKG_EXT="apk"; else PKG_EXT="ipk"; fi
           
           echo "IS_APK=${IS_APK}" >> $GITHUB_ENV
           echo "PKG_EXT=${PKG_EXT}" >> $GITHUB_ENV
           
-          # --- Create Custom Repositories / Feeds ---
           if [ "$IS_APK" = "true" ]; then
             CUSTOM_REPOS_DIR="${FILES_DIR}/etc/apk"
             mkdir -p "${CUSTOM_REPOS_DIR}"
@@ -162,7 +146,6 @@ jobs:
             echo "--- Custom OPKG feeds generated ---"
           fi
 
-          # --- Branding Strategy ---
           cat << EOF > "${FILES_DIR}/etc/os-release"
           NAME='PeDitXOS'
           VERSION='${{ github.event.inputs.openwrt_version }}'
@@ -180,15 +163,12 @@ jobs:
           EOF
           echo "--- os-release file generated ---"
 
-          # --- Create UCI Defaults Script with engine-adaptive fallback logic ---
           UCI_SCRIPT_DIR="${FILES_DIR}/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
-          
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
           cat << 'EOF_SCRIPT' >> "${UCI_SCRIPT_PATH}"
-          # 1. Handle Legacy OPKG environment if detected
           if [ -d /etc/opkg ]; then
             if [ -f /etc/opkg.conf ]; then
               sed -i 's/option check_signature/# option check_signature/g' /etc/opkg.conf
@@ -202,7 +182,6 @@ jobs:
             rm -f /tmp/passwall.pub
           fi
 
-          # 2. Handle Modern APK (OpenWrt 25+) environment if detected
           if [ -d /etc/apk ]; then
             if [ -f /etc/apk/repositories ]; then
               sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
@@ -226,7 +205,6 @@ jobs:
           fi
           EOF_SCRIPT
 
-          # UCI settings
           THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
@@ -260,88 +238,57 @@ jobs:
           echo "--- Custom UCI script generated ---"
 
       - name: 'Download Custom Packages'
+        env:
+          GITHUB_API_TOKEN: ${{ github.token }}
         run: |
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Helper function for safe direct downloads (Public Repo - No Auth Required)
-          download_direct_pkg() {
-            local URL="$1"
-            local FILENAME=$(basename "$URL")
-            echo "--> Downloading public package: $FILENAME..."
+          # Precise downloader using specific tags and github.token to avoid rate limits
+          download_pkg_by_tag() {
+            local REPO="$1"
+            local TAG="$2"
+            local SEARCH_PATTERN="$3" 
             
-            # -f ensures curl fails silently on HTTP errors (like 404) instead of saving HTML error page
-            # -L follows redirects if raw.githubusercontent.com redirects
-            # --retry helps with transient network issues
-            if ! curl -fL --retry 3 --retry-delay 2 -o "${CUSTOM_PKG_DIR}/$FILENAME" "$URL"; then
-              echo "::error::Failed to download $FILENAME from public repo. Check URL or network."
-              exit 1
+            echo "--> Fetching ${REPO} @ ${TAG} matching '${SEARCH_PATTERN}.${{ env.PKG_EXT }}'..."
+            local API_URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
+            local RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
+            
+            local URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg EXT ".${{ env.PKG_EXT }}" \
+              '.assets[] | select(.name | contains($PAT) and endswith($EXT)) | .browser_download_url' | head -n 1)
+              
+            if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+              wget -q "$URL" -P "${CUSTOM_PKG_DIR}" && echo "--> OK: $(basename $URL)" || echo "::warning::Download failed for $URL"
+            else
+              echo "::error::Asset matching '${SEARCH_PATTERN}.${{ env.PKG_EXT }}' not found in ${REPO}@${TAG}"
             fi
-            echo "--> Successfully downloaded $FILENAME"
           }
 
-          # Download Themes directly from the specified RAW links based on the package type (apk/ipk)
-          # NOTE: Ensure these URLs point to the actual existing files in your GitHub repo.
-          if [ "${{ env.IS_APK }}" = "true" ]; then
-            # Update these URLs to your actual APK paths if they differ
-            download_direct_pkg "https://raw.githubusercontent.com/PeDitXOS/xtemple/main/luci-theme-peditx/v1.2.3/apk/luci-theme-peditx-1.2.3-r01.apk"
-            download_direct_pkg "https://raw.githubusercontent.com/PeDitXOS/xtemple/main/luci-theme-carbonpx/v1.0.5/apk/luci-theme-carbonpx-1.0.5-r01.apk"
-          else
-            # Update these URLs to your actual IPK paths if they differ
-            download_direct_pkg "https://raw.githubusercontent.com/PeDitXOS/xtemple/main/luci-theme-peditx/v1.2.3/ipk/luci-theme-peditx_1.2.3-01_all.ipk"
-            download_direct_pkg "https://raw.githubusercontent.com/PeDitXOS/xtemple/main/luci-theme-carbonpx/v1.0.5/ipk/luci-theme-carbonpx_1.0.5-01_all.ipk"
-          fi
+          # 1. Download Themes (Architecture Independent / 'all')
+          download_pkg_by_tag "PeDitXOS/luci-theme-peditx" "v1.2.3" "luci-theme-peditx"
+          download_pkg_by_tag "PeDitXOS/luci-theme-carbonPX" "v1.0.5" "luci-theme-carbonpx"
 
+          # 2. Download ThemeSwitch (STRICTLY Architecture Dependent)
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
-            if [ "${{ env.IS_APK }}" = "true" ]; then
-              download_direct_pkg "https://raw.githubusercontent.com/PeDitXOS/xtemple/main/luci-app-themeswitch/v1.0.0/apk/luci-app-themeswitch-1.0.5.apk"
-            else
-              download_direct_pkg "https://raw.githubusercontent.com/PeDitXOS/xtemple/main/luci-app-themeswitch/v1.0.0/ipk/luci-app-themeswitch_1.0.5_x86_64.ipk"
-            fi
+            download_pkg_by_tag "PeDitXOS/luci-app-themeswitch" "v1.0.0" "luci-app-themeswitch_${{ env.TARGET_ARCH }}"
           fi
           
-          # Convert extra packages to lowercase to prevent mobile capitalization errors
+          # 3. Handle Passwall Bundles
           EXTRA_PKGS_LOWER=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
           for pkg in $EXTRA_PKGS_LOWER; do
-            if [[ "$pkg" == "luci-app-passwall" ]]; then
-              # Using previous working method for passwall bundles via API
-              REPO_PATH="peditx/openwrt-passwall"
-              echo "--> Attempting to download dependency bundle for ${REPO_PATH}..."
+            if [[ "$pkg" == "luci-app-passwall" || "$pkg" == "luci-app-passwall2" ]]; then
+              REPO_PATH="peditx/openwrt-${pkg}"
+              echo "--> Handling bundle for ${pkg}..."
               API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
-              API_RESPONSE=$(curl -sL "$API_URL")
-              if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
-                ZIP_FILENAME="passwall_packages_${{ env.PKG_EXT }}_${{ env.TARGET_ARCH }}.zip"
-                ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
-                if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
-                  wget -q "${ZIP_URL}" -O dependencies.zip || echo "Warning: Failed to download passwall zip bundle"
-                  unzip -qo dependencies.zip -d "${CUSTOM_PKG_DIR}" || echo "Warning: Extraction failed"
-                  rm -f dependencies.zip
-                  echo "--> Successfully downloaded dependency bundle for ${REPO_PATH}"
-                else
-                  echo "::warning::Could not find dependency bundle for ${REPO_PATH}."
-                fi
+              API_RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
+              
+              ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg ARCH "${{ env.TARGET_ARCH }}" '.assets[] | select(.name | contains("passwall_packages") and contains($ARCH) and endswith("zip")) | .browser_download_url' | head -n 1)
+              if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
+                wget -q "${ZIP_URL}" -O deps.zip && unzip -qo deps.zip -d "${CUSTOM_PKG_DIR}" && rm -f deps.zip && echo "--> Bundle extracted for ${pkg}"
               else
-                echo "::warning::Could not find a valid release for ${REPO_PATH}."
-              fi
-            fi
-            if [[ "$pkg" == "luci-app-passwall2" ]]; then
-              REPO_PATH="peditx/openwrt-passwall2"
-              echo "--> Attempting to download dependency bundle for ${REPO_PATH}..."
-              API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
-              API_RESPONSE=$(curl -sL "$API_URL")
-              if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
-                ZIP_FILENAME="passwall_packages_${{ env.PKG_EXT }}_${{ env.TARGET_ARCH }}.zip"
-                ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
-                if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
-                  wget -q "${ZIP_URL}" -O dependencies.zip || echo "Warning: Failed to download passwall zip bundle"
-                  unzip -qo dependencies.zip -d "${CUSTOM_PKG_DIR}" || echo "Warning: Extraction failed"
-                  rm -f dependencies.zip
-                  echo "--> Successfully downloaded dependency bundle for ${REPO_PATH}"
-                else
-                  echo "::warning::Could not find dependency bundle for ${REPO_PATH}."
-                fi
-              else
-                echo "::warning::Could not find a valid release for ${REPO_PATH}."
+                echo "::warning::No bundle zip found for ${pkg}, trying individual package..."
+                PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg NAME "$pkg" --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | contains($NAME) and endswith($EXT)) | .browser_download_url' | head -n 1)
+                [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ] && wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}"
               fi
             fi
           done
@@ -352,10 +299,8 @@ jobs:
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
           
-          # --- Smart Package Selection Logic ---
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup"
-          
           FINAL_EXTRA_PACKAGES=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
 
           APPLY_LOW_FLASH_RESTRICTIONS=false
