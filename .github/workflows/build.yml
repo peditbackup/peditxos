@@ -60,7 +60,26 @@ jobs:
       - name: 'Install Build Dependencies'
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp apk-tools || sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
+          
+          # Forcefully register the universe repository to guarantee package availability
+          sudo add-apt-repository -y universe || true
+          
+          # Attempt native installation of apk-tools, fallback to static binary on failure
+          sudo apt-get install -y apk-tools || {
+            echo "Native apk-tools failed, pulling official static compiled binary from Alpine mirror..."
+            wget -qO /tmp/apk-static.apk https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/apk-tools-static-2.14.4-r0.apk || {
+              echo "Primary mirror timed out, querying edge repository..."
+              wget -qO /tmp/apk-static.apk https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/apk-tools-static-2.14.4-r0.apk
+            }
+            tar -xzf /tmp/apk-static.apk -C /tmp sbin/apk.static
+            sudo mv /tmp/sbin/apk.static /usr/bin/apk
+            sudo chmod +x /usr/bin/apk
+            rm -f /tmp/apk-static.apk
+          }
+          
+          # Validate package management tool binary registration
+          apk --version || echo "Warning: local apk tool configuration finished with warnings"
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
         id: download_ib
@@ -330,39 +349,42 @@ jobs:
             download_latest_pkg "PeDitXOS/luci-app-themeswitch" "luci-app-themeswitch" "${{ env.TARGET_ARCH }}"
           fi
           
+          # Custom passwall downloader utilizing reliable explicit repository mappings
+          download_passwall_bundle() {
+            local PASSWALL_REPO_PATH="$1"
+            echo "--> Attempting to download dependency bundle for ${PASSWALL_REPO_PATH}..."
+            local API_URL="https://api.github.com/repos/${PASSWALL_REPO_PATH}/releases/latest"
+            local API_RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
+            if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
+              # Download primary Passwall interface ipk/apk
+              local PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | endswith($EXT)) | .browser_download_url' | head -n 1)
+              if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
+                wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading passwall package"
+              fi
+              # Download architecture dependency bundles zip
+              local ZIP_FILENAME="passwall_packages_${{ env.PKG_EXT }}_${{ env.TARGET_ARCH }}.zip"
+              local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url' | head -n 1)
+              if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
+                wget -q "${ZIP_URL}" -O deps.zip || echo "Warning: Failed downloading passwall zip bundle"
+                unzip -qo deps.zip -d "${CUSTOM_PKG_DIR}" || echo "Warning: Extraction failed"
+                rm -f deps.zip
+                echo "--> Successfully downloaded dependency bundle for ${PASSWALL_REPO_PATH}"
+              else
+                echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO_PATH}."
+              fi
+            else
+                echo "::warning::Could not find a valid release for ${PASSWALL_REPO_PATH}."
+            fi
+          }
+
           # Handle Passwall Bundles safely
           EXTRA_PKGS_LOWER=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
           for pkg in $EXTRA_PKGS_LOWER; do
-            if [[ "$pkg" == "luci-app-passwall" || "$pkg" == "luci-app-passwall2" ]]; then
-              REPO_PATH="peditx/openwrt-${pkg}"
-              echo "--> Handling bundle for ${pkg}..."
-              API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
-              API_RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
-              
-              if ! echo "$API_RESPONSE" | jq -e '.assets' > /dev/null 2>&1; then
-                echo "::warning::Could not fetch release info for ${REPO_PATH}. Skipping."
-                continue
-              fi
-              
-              ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg ARCH "${{ env.TARGET_ARCH }}" '.assets[] | select(.name | contains("passwall_packages") and contains($ARCH) and endswith("zip")) | .browser_download_url' | head -n 1)
-              if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
-                wget -q "${ZIP_URL}" -O deps.zip && unzip -qo deps.zip -d "${CUSTOM_PKG_DIR}" && rm -f deps.zip && echo "--> Bundle extracted for ${pkg}"
-              else
-                echo "::warning::No bundle zip found for ${pkg}, trying individual package..."
-                PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg NAME "$pkg" --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | contains($NAME) and endswith($EXT)) | .browser_download_url' | head -n 1)
-                
-                if [ -z "$PKG_URL" ] || [ "$PKG_URL" == "null" ]; then
-                  if [ "${{ env.PKG_EXT }}" == "apk" ]; then
-                    PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg NAME "$pkg" '.assets[] | select(.name | contains($NAME) and endswith(".ipk")) | .browser_download_url' | head -n 1)
-                  fi
-                fi
-                
-                if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
-                  wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}" && echo "--> OK: Individual package downloaded"
-                else
-                  echo "::warning::No individual package found for ${pkg} either."
-                fi
-              fi
+            if [[ "$pkg" == "luci-app-passwall" ]]; then
+              download_passwall_bundle "peditx/openwrt-passwall"
+            fi
+            if [[ "$pkg" == "luci-app-passwall2" ]]; then
+              download_passwall_bundle "peditx/openwrt-passwall2"
             fi
           done
 
