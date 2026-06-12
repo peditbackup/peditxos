@@ -269,41 +269,63 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Consolidated dynamic downloader for PeDitXOS/xtemple assets
-          download_xtemple_assets() {
-            echo "--> Fetching custom themes and tools from PeDitXOS/xtemple..."
-            local API_URL="https://api.github.com/repos/PeDitXOS/xtemple/releases/latest"
-            local API_RESPONSE=$(curl -sL "$API_URL")
-            if ! echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
-              echo "::warning::Could not fetch assets from PeDitXOS/xtemple repository."
+          # Dynamic repository package parser that maps to PeDitXOS/xtemple custom subdirectories
+          download_xtemple_package() {
+            local PKG_NAME="$1"     # e.g., luci-theme-peditx
+            local SUB_DIR="$2"      # apk or ipk
+            local ARCH_FILTER="$3"  # target_arch or "all"
+
+            echo "--> Resolving latest tree contents for $PKG_NAME..."
+            local API_URL="https://api.github.com/repos/PeDitXOS/xtemple/contents/${PKG_NAME}"
+            local RESPONSE=$(curl -sL "$API_URL")
+
+            # Extract highest semver directory folder name (e.g. v1.2.3)
+            local LATEST_VER=$(echo "$RESPONSE" | jq -r '.[] | select(.type == "dir" and (.name | startswith("v"))) | .name' | sort -V | tail -n 1)
+            if [ -z "$LATEST_VER" ] || [ "$LATEST_VER" = "null" ]; then
+              echo "::warning::Could not resolve valid version folder inside PeDitXOS/xtemple/${PKG_NAME}."
               return 1
             fi
-            
-            # Download luci-theme-peditx
-            local PEDITX_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | startswith("luci-theme-peditx_") and endswith($EXT)) | .browser_download_url' | head -n 1)
-            if [ -n "$PEDITX_URL" ] && [ "$PEDITX_URL" != "null" ]; then
-              wget -q "$PEDITX_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading peditx theme"
-              echo "--> Successfully downloaded luci-theme-peditx"
+            echo "--> Selected latest version: $LATEST_VER"
+
+            # Query folder list for the respective packaging engine (apk or ipk)
+            local TARGET_FOLDER_URL="https://api.github.com/repos/PeDitXOS/xtemple/contents/${PKG_NAME}/${LATEST_VER}/${SUB_DIR}"
+            local FOLDER_RESPONSE=$(curl -sL "$TARGET_FOLDER_URL")
+            if ! echo "$FOLDER_RESPONSE" | jq -e '.[]' > /dev/null 2>&1; then
+              echo "::warning::Folder empty or unavailable: ${PKG_NAME}/${LATEST_VER}/${SUB_DIR}"
+              return 1
             fi
-            
-            # Download luci-theme-carbonpx
-            local CARBON_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | startswith("luci-theme-carbonpx_") and endswith($EXT)) | .browser_download_url' | head -n 1)
-            if [ -n "$CARBON_URL" ] && [ "$CARBON_URL" != "null" ]; then
-              wget -q "$CARBON_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading carbonpx theme"
-              echo "--> Successfully downloaded luci-theme-carbonpx"
+
+            # Resolve actual download link
+            local DOWNLOAD_URL=""
+            if [ -n "$ARCH_FILTER" ] && [ "$ARCH_FILTER" != "all" ]; then
+              # Attempt to download arch-specific package first
+              DOWNLOAD_URL=$(echo "$FOLDER_RESPONSE" | jq -r --arg EXT ".${{ env.PKG_EXT }}" --arg ARCH "$ARCH_FILTER" '.[] | select(.type == "file" and (.name | endswith($EXT)) and (.name | contains($ARCH))) | .download_url' | head -n 1)
+              # Fallback to general architecture agnostic "all" package if specific arch fails
+              if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+                DOWNLOAD_URL=$(echo "$FOLDER_RESPONSE" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.[] | select(.type == "file" and (.name | endswith($EXT)) and (.name | contains("all"))) | .download_url' | head -n 1)
+              fi
             fi
-            
-            # Download luci-app-themeswitch (Skip if target is legacy x86/generic)
+
+            # General universal fallback selection if filter not set or previously unmatched
+            if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+              DOWNLOAD_URL=$(echo "$FOLDER_RESPONSE" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.[] | select(.type == "file" and (.name | endswith($EXT))) | .download_url' | head -n 1)
+            fi
+
+            if [ -n "$DOWNLOAD_URL" ] && [ "$DOWNLOAD_URL" != "null" ]; then
+              local DL_FILENAME=$(basename "$DOWNLOAD_URL")
+              echo "--> Downloading: $DL_FILENAME"
+              wget -q "$DOWNLOAD_URL" -P "${CUSTOM_PKG_DIR}"
+            else
+              echo "::warning::No matching .${{ env.PKG_EXT }} asset located inside ${PKG_NAME}/${LATEST_VER}/${SUB_DIR}"
+            fi
+          }
+
+          download_xtemple_assets() {
+            echo "--> Starting xtemple package resolution..."
+            download_xtemple_package "luci-theme-peditx" "${{ env.PKG_EXT }}"
+            download_xtemple_package "luci-theme-carbonpx" "${{ env.PKG_EXT }}"
             if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
-              local SWITCH_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" --arg ARCH "${{ env.TARGET_ARCH }}" '.assets[] | select(.name | startswith("luci-app-themeswitch_") and (contains($ARCH) or contains("all")) and endswith($EXT)) | .browser_download_url' | head -n 1)
-              # Fallback if specific architecture string is not matched directly
-              if [ -z "$SWITCH_URL" ] || [ "$SWITCH_URL" = "null" ]; then
-                SWITCH_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | startswith("luci-app-themeswitch_") and endswith($EXT)) | .browser_download_url' | head -n 1)
-              fi
-              if [ -n "$SWITCH_URL" ] && [ "$SWITCH_URL" != "null" ]; then
-                wget -q "$SWITCH_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading themeswitch tool"
-                echo "--> Successfully downloaded luci-app-themeswitch"
-              fi
+              download_xtemple_package "luci-app-themeswitch" "${{ env.PKG_EXT }}" "${{ env.TARGET_ARCH }}"
             fi
           }
 
@@ -334,7 +356,7 @@ jobs:
             fi
           }
 
-          # Invoke xtemple download pipeline
+          # Execute xtemple download flow
           download_xtemple_assets
 
           # Convert extra packages to lowercase to prevent mobile capitalization errors
