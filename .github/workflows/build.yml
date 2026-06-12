@@ -65,14 +65,31 @@ jobs:
           # Forcefully register the universe repository to guarantee package availability
           sudo add-apt-repository -y universe || true
           
-          # Attempt native installation of apk-tools, fallback to static binary on failure
+          # Attempt native installation of apk-tools, fallback to dynamic static binary on failure
           sudo apt-get install -y apk-tools || {
-            echo "Native apk-tools failed, pulling official static compiled binary from Alpine mirror..."
-            wget -qO /tmp/apk-static.apk https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/apk-tools-static-2.14.4-r0.apk || {
-              echo "Primary mirror timed out, querying edge repository..."
-              wget -qO /tmp/apk-static.apk https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/apk-tools-static-2.14.4-r0.apk
-            }
-            tar -xzf /tmp/apk-static.apk -C /tmp sbin/apk.static
+            echo "Native apk-tools failed, dynamically resolving official static compiled binary from Alpine..."
+            
+            # Dynamically fetch the current package filename to avoid 404 on revision bumps
+            APK_FILENAME=$(curl -sL https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/ | grep -oE 'apk-tools-static-[0-9.]+-r[0-9]+\.apk' | head -n 1)
+            
+            if [ -z "$APK_FILENAME" ]; then
+              echo "Primary mirror query failed, trying edge channel..."
+              APK_FILENAME=$(curl -sL https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/ | grep -oE 'apk-tools-static-[0-9.]+-r[0-9]+\.apk' | head -n 1)
+              APK_URL="https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/${APK_FILENAME}"
+            else
+              APK_URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/${APK_FILENAME}"
+            fi
+            
+            if [ -z "$APK_FILENAME" ]; then
+              echo "::error::Could not resolve apk-tools-static filename from Alpine mirrors."
+              exit 1
+            fi
+            
+            echo "Downloading static apk-tools from: $APK_URL"
+            wget -qO /tmp/apk-static.apk "$APK_URL"
+            
+            # Extract safely using tar -xf (which handles both gzip and zstd automatically)
+            tar -xf /tmp/apk-static.apk -C /tmp sbin/apk.static
             sudo mv /tmp/sbin/apk.static /usr/bin/apk
             sudo chmod +x /usr/bin/apk
             rm -f /tmp/apk-static.apk
@@ -619,7 +636,7 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_PAT }}" \
             -d "{
-              \"build_id\": \"${{ github.event.inputs.build_id }}\",
+              \"build_id\": \"./${{ github.event.inputs.build_id }}\",
               \"status\": \"$STATUS\",
               \"download_url\": \"$DOWNLOAD_URL\"
             }"
