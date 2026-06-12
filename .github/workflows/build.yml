@@ -60,7 +60,7 @@ jobs:
       - name: 'Install Build Dependencies'
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp apk-tools || sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
         id: download_ib
@@ -269,7 +269,7 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Dynamic repository package parser that maps to PeDitXOS/xtemple custom subdirectories
+          # Dynamic repository package parser that maps to PeDitXOS/xtemple custom subdirectories with Strict Architecture Guard
           download_xtemple_package() {
             local PKG_NAME="$1"     # e.g., luci-theme-peditx
             local SUB_DIR="$2"      # apk or ipk
@@ -295,7 +295,7 @@ jobs:
               return 1
             fi
 
-            # Resolve actual download link
+            # Resolve actual download link with strict target architecture parsing
             local DOWNLOAD_URL=""
             if [ -n "$ARCH_FILTER" ] && [ "$ARCH_FILTER" != "all" ]; then
               # Attempt to download arch-specific package first
@@ -306,17 +306,34 @@ jobs:
               fi
             fi
 
-            # General universal fallback selection if filter not set or previously unmatched
+            # Absolute generic fallback ONLY if arch-specific or arch-agnostic filters did not return a match
             if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
               DOWNLOAD_URL=$(echo "$FOLDER_RESPONSE" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.[] | select(.type == "file" and (.name | endswith($EXT))) | .download_url' | head -n 1)
             fi
 
+            # STRICT SECURITY GUARD: If the resolved URL contains an incompatible target arch name in filename, discard it!
+            if [ -n "$DOWNLOAD_URL" ] && [ "$DOWNLOAD_URL" != "null" ]; then
+              local FN=$(basename "$DOWNLOAD_URL" | tr '[:upper:]' '[:lower:]')
+              local IS_INCOMPATIBLE=false
+              
+              for arch in x86_64 aarch64 arm cortex mips mipsel powerpc riscv s390x; do
+                if [[ "$FN" == *"$arch"* ]] && [ -n "$ARCH_FILTER" ] && [[ "$ARCH_FILTER" != *"$arch"* ]]; then
+                  IS_INCOMPATIBLE=true
+                fi
+              done
+              
+              if [ "$IS_INCOMPATIBLE" = "true" ]; then
+                echo "::warning::Skipping incompatible package $FN for target architecture: $ARCH_FILTER"
+                DOWNLOAD_URL=""
+              fi
+            fi
+
             if [ -n "$DOWNLOAD_URL" ] && [ "$DOWNLOAD_URL" != "null" ]; then
               local DL_FILENAME=$(basename "$DOWNLOAD_URL")
-              echo "--> Downloading: $DL_FILENAME"
+              echo "--> Downloading compatible package: $DL_FILENAME"
               wget -q "$DOWNLOAD_URL" -P "${CUSTOM_PKG_DIR}"
             else
-              echo "::warning::No matching .${{ env.PKG_EXT }} asset located inside ${PKG_NAME}/${LATEST_VER}/${SUB_DIR}"
+              echo "::warning::No compatible .${{ env.PKG_EXT }} asset located inside ${PKG_NAME}/${LATEST_VER}/${SUB_DIR} for arch ${ARCH_FILTER:-any}"
             fi
           }
 
@@ -369,6 +386,28 @@ jobs:
               download_passwall_bundle "peditx/openwrt-passwall2"
             fi
           done
+
+          # Automatically index local custom APK packages to generate the required packages.adb index file (fixes APK 404/no package errors)
+          if [ "${{ env.IS_APK }}" = "true" ]; then
+            echo "--> Indexing local custom APK packages..."
+            cd "${CUSTOM_PKG_DIR}"
+            
+            # Locate standalone apk host tool binary or fallback to newly installed host package-manager
+            APK_TOOL=$(find ../staging_dir -name apk -type f 2>/dev/null | head -n 1)
+            if [ -z "$APK_TOOL" ]; then
+              if command -v apk &>/dev/null; then
+                APK_TOOL="apk"
+              fi
+            fi
+            
+            if [ -n "$APK_TOOL" ]; then
+              echo "Using APK indexing engine: $APK_TOOL"
+              $APK_TOOL index -o packages.adb *.apk || echo "Warning: Standalone apk index builder execution failed"
+            else
+              echo "::warning::Could not locate APK indexing tool. Local custom package installation might fail!"
+            fi
+            cd -
+          fi
     
       - name: 'Build Firmware Image'
         id: build_image
@@ -377,7 +416,16 @@ jobs:
           make clean
           
           # --- Smart Package Selection Logic ---
-          THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
+          THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx"
+          
+          # Safely verify if luci-app-themeswitch was actually downloaded for current architecture target before including it
+          if ls "${{ env.IMAGEBUILDER_DIR }}/packages"/luci-app-themeswitch* 1>/dev/null 2>&1; then
+            THEME_PACKAGES="${THEME_PACKAGES} luci-app-themeswitch"
+            echo "luci-app-themeswitch found and included."
+          else
+            echo "luci-app-themeswitch NOT found or is incompatible with target architecture. Excluding from build targets."
+          fi
+
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup"
           
           # Convert all input packages to lowercase
