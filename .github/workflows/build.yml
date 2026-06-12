@@ -64,30 +64,6 @@ jobs:
           
           # Forcefully register the universe repository to guarantee package availability
           sudo add-apt-repository -y universe || true
-          
-          # Always resolve and download official static compiled apk-tools v2 (2.14.x) from Alpine v3.20
-          # This totally avoids seccomp/sandboxing IO ERRORs introduced in apk v3 (Alpine 3.21+) inside GitHub Actions runners
-          echo "Resolving official static compiled apk-tools v2 from Alpine v3.20..."
-          HTML=$(curl -sL -A "Mozilla/5.0" "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/")
-          APK_FILENAME=$(echo "$HTML" | grep -oE 'apk-tools-static-[0-9.]+-r[0-9]+\.apk' | head -n 1)
-          if [ -n "$APK_FILENAME" ]; then
-            APK_URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/${APK_FILENAME}"
-            echo "Found static APK package: ${APK_FILENAME}"
-            
-            echo "Downloading static apk-tools from: $APK_URL"
-            wget -qO /tmp/apk-static.apk "$APK_URL"
-            
-            # Extract safely using tar
-            tar -xf /tmp/apk-static.apk -C /tmp sbin/apk.static
-            sudo mv /tmp/sbin/apk.static /usr/bin/apk
-            sudo chmod +x /usr/bin/apk
-            rm -f /tmp/apk-static.apk
-            
-            # Validate package management tool binary registration
-            /usr/bin/apk --version
-          else
-            echo "Warning: Could not dynamically resolve fallback apk-tools from Alpine v3.20 mirror."
-          fi
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
         id: download_ib
@@ -132,8 +108,29 @@ jobs:
             cp /tmp/passwall.pub "${IMAGEBUILDER_DIR}/etc/apk/keys/passwall.rsa.pub"
           fi
           
-          # NOTE: We no longer override the ImageBuilder host apk binary. 
-          # Keeping the native compiler-provided binary intact prevents host-level compatibility issues.
+          # Append custom Passwall feeds directly to the ImageBuilder's source files so it can fetch them natively at build time
+          OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
+          TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
+          
+          if [ -f "${IMAGEBUILDER_DIR}/apk.conf" ] || [ -d "${IMAGEBUILDER_DIR}/etc/apk" ] || grep -q -E "apk|APK" "${IMAGEBUILDER_DIR}/Makefile" 2>/dev/null; then
+            IS_APK=true
+          else
+            IS_APK=false
+          fi
+
+          find "${IMAGEBUILDER_DIR}" -type f \( -name "repositories.conf" -o -name "repositories" -o -name "apk.conf" \) 2>/dev/null | while read -r file; do
+            echo "Adding custom feeds to ImageBuilder config: $file"
+            if [ "$IS_APK" = "true" ]; then
+              echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/passwall_packages" >> "$file"
+              echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/passwall_luci" >> "$file"
+              echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/passwall2" >> "$file"
+            else
+              echo "src/gz peditxos_passwall_pkgs http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/passwall_packages" >> "$file"
+              echo "src/gz peditxos_passwall_luci http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/passwall_luci" >> "$file"
+              echo "src/gz peditxos_passwall2 http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/passwall2" >> "$file"
+            fi
+          done
+          
           echo "--- Signature check configurations and proxies initialized ---"
 
       - name: 'Prepare Custom Files and Scripts'
@@ -160,7 +157,7 @@ jobs:
           OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
           TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
           
-          # --- Create Custom Repositories / Feeds ---
+          # --- Create Custom Repositories / Feeds for the Target System ---
           if [ "$IS_APK" = "true" ]; then
             # Generate APK repository feeds configuration using '%a' to prevent duplicate architecture path appending by the APK manager
             CUSTOM_REPOS_DIR="${FILES_DIR}/etc/apk"
@@ -413,53 +410,11 @@ jobs:
               download_passwall_bundle "Openwrt-Passwall/openwrt-passwall2" "luci-app-passwall2"
             fi
           done
+          
+          # NOTE: Manual apk index commands are completely removed to prevent
+          # sandboxing issues on the GitHub Actions host.
+          # The native ImageBuilder make process handles indexing cleanly during compilation.
 
-          # CRITICAL FIX: Dynamically scan, locate and utilize the unmodified native ImageBuilder host apk executable.
-          # Since we do NOT overwrite this binary with the Alpine static v3 tool anymore, this step runs OpenWrt's original host-compiler apk tool.
-          # It generates the SQLite-based packages.adb and APKINDEX.tar.gz flawlessly using --allow-untrusted without sandboxing IO errors.
-          if [ "$IS_APK" = "true" ]; then
-            echo "--> Scanning ImageBuilder for native host apk binary..."
-            cd "${CUSTOM_PKG_DIR}"
-            
-            OWRT_APK=""
-            # Loop through all files named 'apk' with execute permissions inside the untouched ImageBuilder directory structure
-            for f in $(find "${{ github.workspace }}/imagebuilder" -type f -name "apk" -executable); do
-              # Ensure the executable runs successfully on our host architecture (x86_64 runner)
-              if "$f" --version >/dev/null 2>&1; then
-                OWRT_APK="$f"
-                echo "--> Found valid original host apk binary: $OWRT_APK"
-                break
-              fi
-            done
-            
-            if [ -n "$OWRT_APK" ] && [ -x "$OWRT_APK" ]; then
-              if ls *.apk &>/dev/null; then
-                echo "--> Indexing $(ls *.apk | wc -l) packages into APKINDEX.tar.gz and packages.adb (using original compiler utility)..."
-                "$OWRT_APK" index --allow-untrusted -o APKINDEX.tar.gz *.apk
-                "$OWRT_APK" index --allow-untrusted -o packages.adb *.apk
-              fi
-            else
-              # Fallback to local stable apk utility downloaded from Alpine v3.20 if ImageBuilder utility is missing
-              if [ -x "/usr/bin/apk" ]; then
-                echo "::warning::Original host apk not found. Indexing with stable Alpine v3.20 fallback utility..."
-                /usr/bin/apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
-                /usr/bin/apk index --allow-untrusted -o packages.adb *.apk
-              else
-                echo "::error::Could not find any runnable host apk binary inside the ImageBuilder directory or system paths."
-                exit 1
-              fi
-            fi
-            
-            # Verify database generation status
-            if [ -f "packages.adb" ] && [ -s "packages.adb" ]; then
-              echo "--> APK index successfully created ($(stat -c%s packages.adb) bytes)"
-            else
-              echo "::error::Failed to generate a valid packages.adb database"
-              exit 1
-            fi
-            cd -
-          fi
-    
       - name: 'Build Firmware Image'
         id: build_image
         run: |
