@@ -271,18 +271,28 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Smart downloader with APK->IPK fallback for themes
+          # Robust downloader with Tag Fallback and APK->IPK Fallback
           download_theme_pkg() {
             local REPO="$1"
-            local TAG="$2"
-            local SEARCH_PATTERN="$3"
+            local TAG_PRIMARY="$2"
+            local TAG_FALLBACK="$3"  # Can be empty
+            local SEARCH_PATTERN="$4"
             
-            echo "--> Fetching ${REPO} @ ${TAG}..."
-            local API_URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
+            echo "--> Fetching ${REPO} @ ${TAG_PRIMARY}..."
+            local API_URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG_PRIMARY}"
             local RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
             
+            # If primary tag fails and fallback exists, try fallback
             if ! echo "$RESPONSE" | jq -e '.assets' > /dev/null 2>&1; then
-              echo "::error::Invalid API response for ${REPO}@${TAG}"
+              if [ -n "$TAG_FALLBACK" ]; then
+                echo "::warning::Tag ${TAG_PRIMARY} not found or invalid. Trying fallback ${TAG_FALLBACK}..."
+                API_URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG_FALLBACK}"
+                RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
+              fi
+            fi
+            
+            if ! echo "$RESPONSE" | jq -e '.assets' > /dev/null 2>&1; then
+              echo "::error::Invalid API response for ${REPO}. Neither ${TAG_PRIMARY} nor ${TAG_FALLBACK} worked."
               return 1
             fi
             
@@ -290,7 +300,7 @@ jobs:
             local URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg EXT ".${{ env.PKG_EXT }}" \
               '.assets[] | select(.name | contains($PAT) and endswith($EXT)) | .browser_download_url' | head -n 1)
             
-            # Fallback to IPK if APK not found (common during transition period)
+            # Fallback to IPK if APK not found
             if [ -z "$URL" ] || [ "$URL" == "null" ]; then
               if [ "${{ env.PKG_EXT }}" == "apk" ]; then
                 echo "::warning::No .apk found for ${SEARCH_PATTERN}, falling back to .ipk..."
@@ -301,18 +311,18 @@ jobs:
             if [ -n "$URL" ] && [ "$URL" != "null" ]; then
               wget -q "$URL" -P "${CUSTOM_PKG_DIR}" && echo "--> OK: $(basename $URL)"
             else
-              echo "::error::No matching package found for ${SEARCH_PATTERN} in ${REPO}@${TAG}"
+              echo "::error::No matching package found for ${SEARCH_PATTERN} in ${REPO}"
               return 1
             fi
           }
 
-          # Download Themes with smart fallback
-          download_theme_pkg "PeDitXOS/luci-theme-peditx" "v1.2.3" "luci-theme-peditx"
-          download_theme_pkg "PeDitXOS/luci-theme-carbonPX" "v1.0.5" "luci-theme-carbonpx"
+          # Download Themes (No fallback tag needed as they work fine)
+          download_theme_pkg "PeDitXOS/luci-theme-peditx" "v1.2.3" "" "luci-theme-peditx"
+          download_theme_pkg "PeDitXOS/luci-theme-carbonPX" "v1.0.5" "" "luci-theme-carbonpx"
 
-          # Download ThemeSwitch (Architecture Specific with fallback)
+          # Download ThemeSwitch WITH TAG FALLBACK (v1.0.5 -> v1.0.0)
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
-            download_theme_pkg "PeDitXOS/luci-app-themeswitch" "v1.0.5" "luci-app-themeswitch_${{ env.TARGET_ARCH }}"
+            download_theme_pkg "PeDitXOS/luci-app-themeswitch" "v1.0.5" "v1.0.0" "luci-app-themeswitch_${{ env.TARGET_ARCH }}"
           fi
           
           # Handle Passwall Bundles safely
@@ -336,7 +346,6 @@ jobs:
                 echo "::warning::No bundle zip found for ${pkg}, trying individual package..."
                 PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg NAME "$pkg" --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | contains($NAME) and endswith($EXT)) | .browser_download_url' | head -n 1)
                 
-                # Fallback to IPK for passwall too
                 if [ -z "$PKG_URL" ] || [ "$PKG_URL" == "null" ]; then
                   if [ "${{ env.PKG_EXT }}" == "apk" ]; then
                     PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg NAME "$pkg" '.assets[] | select(.name | contains($NAME) and endswith(".ipk")) | .browser_download_url' | head -n 1)
