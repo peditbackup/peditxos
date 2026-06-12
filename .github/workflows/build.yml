@@ -265,90 +265,90 @@ jobs:
           echo "--- Custom UCI script generated ---"
 
       - name: 'Download Custom Packages'
+        env:
+          GITHUB_API_TOKEN: ${{ github.token }}
         run: |
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Dynamic package downloader that supports both .apk and .ipk dynamically (with wget non-blocking fallback)
-          download_latest_pkg() {
-            local REPO_PATH="$1"
-            if [ -z "$REPO_PATH" ]; then return; fi
-            echo "--> Attempting to download ${REPO_PATH} with extension .${{ env.PKG_EXT }}..."
-            local API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
-            local API_RESPONSE=$(curl -sL "$API_URL")
-            if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
-              local PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | endswith($EXT)) | .browser_download_url' | head -n 1)
-              if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
-                wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading package $REPO_PATH"
-                echo "--> Successfully downloaded ${REPO_PATH}"
-              else
-                echo "::warning::Found release for ${REPO_PATH}, but no .${{ env.PKG_EXT }} file was found."
+          # Smart downloader with APK->IPK fallback for themes
+          download_theme_pkg() {
+            local REPO="$1"
+            local TAG="$2"
+            local SEARCH_PATTERN="$3"
+            
+            echo "--> Fetching ${REPO} @ ${TAG}..."
+            local API_URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
+            local RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
+            
+            if ! echo "$RESPONSE" | jq -e '.assets' > /dev/null 2>&1; then
+              echo "::error::Invalid API response for ${REPO}@${TAG}"
+              return 1
+            fi
+            
+            # Try primary extension first
+            local URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg EXT ".${{ env.PKG_EXT }}" \
+              '.assets[] | select(.name | contains($PAT) and endswith($EXT)) | .browser_download_url' | head -n 1)
+            
+            # Fallback to IPK if APK not found (common during transition period)
+            if [ -z "$URL" ] || [ "$URL" == "null" ]; then
+              if [ "${{ env.PKG_EXT }}" == "apk" ]; then
+                echo "::warning::No .apk found for ${SEARCH_PATTERN}, falling back to .ipk..."
+                URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" '.assets[] | select(.name | contains($PAT) and endswith(".ipk")) | .browser_download_url' | head -n 1)
               fi
+            fi
+              
+            if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+              wget -q "$URL" -P "${CUSTOM_PKG_DIR}" && echo "--> OK: $(basename $URL)"
             else
-              echo "::warning::Could not find a valid release for ${REPO_PATH}. Skipping."
+              echo "::error::No matching package found for ${SEARCH_PATTERN} in ${REPO}@${TAG}"
+              return 1
             fi
           }
 
-          download_themeswitch() {
-            local REPO_PATH="peditx/luci-app-themeswitch"
-            echo "--> Attempting to download ${REPO_PATH} for arch ${{ env.TARGET_ARCH }}..."
-            local API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
-            local API_RESPONSE=$(curl -sL --fail "$API_URL") || { echo "::error::Failed to fetch latest release."; exit 1; }
+          # Download Themes with smart fallback
+          download_theme_pkg "PeDitXOS/luci-theme-peditx" "v1.2.3" "luci-theme-peditx"
+          download_theme_pkg "PeDitXOS/luci-theme-carbonPX" "v1.0.5" "luci-theme-carbonpx"
 
-            if echo "${API_RESPONSE}" | jq -e '.tag_name' > /dev/null; then
-              local LATEST_VERSION=$(echo "${API_RESPONSE}" | jq -r '.tag_name')
-              local PKG_FILENAME="luci-app-themeswitch_${LATEST_VERSION}_${{ env.TARGET_ARCH }}.${{ env.PKG_EXT }}"
-              local PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${PKG_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
-
-              if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
-                wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed to download themeswitch package"
-                echo "--> Successfully downloaded ${PKG_FILENAME}"
-              else
-                echo "::error::Could not find ${PKG_FILENAME} in the latest release."
-                exit 1
-              fi
-            else
-              echo "::error::Could not find a valid release tag for ${REPO_PATH}."
-              exit 1
-            fi
-          }
-
-          download_passwall_bundle() {
-            local PASSWALL_REPO_PATH="$1"
-            echo "--> Attempting to download dependency bundle for ${PASSWALL_REPO_PATH}..."
-            download_latest_pkg "${PASSWALL_REPO_PATH}"
-            local API_URL="https://api.github.com/repos/${PASSWALL_REPO_PATH}/releases/latest"
-            local API_RESPONSE=$(curl -sL "$API_URL")
-            if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
-              local ZIP_FILENAME="passwall_packages_${{ env.PKG_EXT }}_${{ env.TARGET_ARCH }}.zip"
-              local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
-              if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
-                wget -q "${ZIP_URL}" -O dependencies.zip || echo "Warning: Failed to download passwall zip bundle"
-                unzip -qo dependencies.zip -d "${CUSTOM_PKG_DIR}" || echo "Warning: Extraction failed"
-                rm -f dependencies.zip
-                echo "--> Successfully downloaded dependency bundle for ${PASSWALL_REPO_PATH}"
-              else
-                echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO_PATH}."
-              fi
-            else
-                echo "::warning::Could not find a valid release for ${PASSWALL_REPO_PATH}."
-            fi
-          }
-
-          download_latest_pkg "peditx/luci-theme-peditx"
-          download_latest_pkg "peditx/luci-theme-carbonpx"
+          # Download ThemeSwitch (Architecture Specific with fallback)
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
-            download_themeswitch
+            download_theme_pkg "PeDitXOS/luci-app-themeswitch" "v1.0.5" "luci-app-themeswitch_${{ env.TARGET_ARCH }}"
           fi
           
-          # Convert extra packages to lowercase to prevent mobile capitalization errors
+          # Handle Passwall Bundles safely
           EXTRA_PKGS_LOWER=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
           for pkg in $EXTRA_PKGS_LOWER; do
-            if [[ "$pkg" == "luci-app-passwall" ]]; then
-              download_passwall_bundle "peditx/openwrt-passwall"
-            fi
-            if [[ "$pkg" == "luci-app-passwall2" ]]; then
-              download_passwall_bundle "peditx/openwrt-passwall2"
+            if [[ "$pkg" == "luci-app-passwall" || "$pkg" == "luci-app-passwall2" ]]; then
+              REPO_PATH="peditx/openwrt-${pkg}"
+              echo "--> Handling bundle for ${pkg}..."
+              API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
+              API_RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
+              
+              if ! echo "$API_RESPONSE" | jq -e '.assets' > /dev/null 2>&1; then
+                echo "::warning::Could not fetch release info for ${REPO_PATH}. Skipping."
+                continue
+              fi
+              
+              ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg ARCH "${{ env.TARGET_ARCH }}" '.assets[] | select(.name | contains("passwall_packages") and contains($ARCH) and endswith("zip")) | .browser_download_url' | head -n 1)
+              if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
+                wget -q "${ZIP_URL}" -O deps.zip && unzip -qo deps.zip -d "${CUSTOM_PKG_DIR}" && rm -f deps.zip && echo "--> Bundle extracted for ${pkg}"
+              else
+                echo "::warning::No bundle zip found for ${pkg}, trying individual package..."
+                PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg NAME "$pkg" --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | contains($NAME) and endswith($EXT)) | .browser_download_url' | head -n 1)
+                
+                # Fallback to IPK for passwall too
+                if [ -z "$PKG_URL" ] || [ "$PKG_URL" == "null" ]; then
+                  if [ "${{ env.PKG_EXT }}" == "apk" ]; then
+                    PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg NAME "$pkg" '.assets[] | select(.name | contains($NAME) and endswith(".ipk")) | .browser_download_url' | head -n 1)
+                  fi
+                fi
+                
+                if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
+                  wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}" && echo "--> OK: Individual package downloaded"
+                else
+                  echo "::warning::No individual package found for ${pkg} either."
+                fi
+              fi
             fi
           done
     
