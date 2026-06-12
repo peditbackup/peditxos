@@ -60,7 +60,7 @@ jobs:
       - name: 'Install Build Dependencies'
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp apk-tools || sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
         id: download_ib
@@ -136,32 +136,32 @@ jobs:
           
           # --- Create Custom Repositories / Feeds ---
           if [ "$IS_APK" = "true" ]; then
-            # Generate APK repository feeds configuration using '%a' to prevent duplicate architecture path appending by the APK manager
+            # Generate APK repository feeds configuration aligning with repository.peditxos.ir layout
             CUSTOM_REPOS_DIR="${FILES_DIR}/etc/apk"
             mkdir -p "${CUSTOM_REPOS_DIR}"
             CUSTOM_REPOS_FILE="${CUSTOM_REPOS_DIR}/repositories"
-            BASE_URL_APK="http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/%a"
+            BASE_URL="http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
             
-            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/base" > "${CUSTOM_REPOS_FILE}"
-            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/luci" >> "${CUSTOM_REPOS_FILE}"
-            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/packages" >> "${CUSTOM_REPOS_FILE}"
-            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/routing" >> "${CUSTOM_REPOS_FILE}"
-            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/telephony" >> "${CUSTOM_REPOS_FILE}"
-            echo "$BASE_URL_APK/passwall_luci" >> "${CUSTOM_REPOS_FILE}"
-            echo "$BASE_URL_APK/passwall_packages" >> "${CUSTOM_REPOS_FILE}"
-            echo "$BASE_URL_APK/passwall2" >> "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/base" > "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/luci" >> "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/packages" >> "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/routing" >> "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/telephony" >> "${CUSTOM_REPOS_FILE}"
+            echo "$BASE_URL/passwall_luci" >> "${CUSTOM_REPOS_FILE}"
+            echo "$BASE_URL/passwall_packages" >> "${CUSTOM_REPOS_FILE}"
+            echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
             echo "--- APK repositories config generated ---"
           else
             # Generate legacy OPKG customfeeds configuration
             CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
             mkdir -p "${CUSTOM_FEEDS_DIR}"
             CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
-            BASE_URL_OPKG="http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
+            BASE_URL="http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
             
             echo "# PeDitXOS Custom Feeds" > "${CUSTOM_FEEDS_FILE}"
-            echo "src/gz peditxos_passwall_luci $BASE_URL_OPKG/passwall_luci" >> "${CUSTOM_FEEDS_FILE}"
-            echo "src/gz peditxos_passwall_pkgs $BASE_URL_OPKG/passwall_packages" >> "${CUSTOM_FEEDS_FILE}"
-            echo "src/gz peditxos_passwall2 $BASE_URL_OPKG/passwall2" >> "${CUSTOM_FEEDS_FILE}"
+            echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" >> "${CUSTOM_FEEDS_FILE}"
+            echo "src/gz peditxos_passwall_pkgs $BASE_URL/passwall_packages" >> "${CUSTOM_FEEDS_FILE}"
+            echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "${CUSTOM_FEEDS_FILE}"
             echo "--- Custom OPKG feeds generated ---"
           fi
 
@@ -211,16 +211,17 @@ jobs:
               sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
               sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
               
-              # Safely append dynamic APK repositories fallback using '%a' to prevent duplicate architecture path appending
+              # Safely append dynamic APK repositories fallback if needed
               if ! grep -q "openwrt-passwall-build" /etc/apk/repositories 2>/dev/null; then
                 if [ -f /etc/openwrt_release ]; then
                   . /etc/openwrt_release
                   V_MAJOR=$(echo "$DISTRIB_RELEASE" | cut -d. -f1-2)
+                  V_ARCH="$DISTRIB_ARCH"
                 fi
-                if [ -n "$V_MAJOR" ]; then
-                  echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${V_MAJOR}/%a/passwall_packages" >> /etc/apk/repositories
-                  echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${V_MAJOR}/%a/passwall_luci" >> /etc/apk/repositories
-                  echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${V_MAJOR}/%a/passwall2" >> /etc/apk/repositories
+                if [ -n "$V_MAJOR" ] && [ -n "$V_ARCH" ]; then
+                  echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${V_MAJOR}/${V_ARCH}/passwall_packages" >> /etc/apk/repositories
+                  echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${V_MAJOR}/${V_ARCH}/passwall_luci" >> /etc/apk/repositories
+                  echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${V_MAJOR}/${V_ARCH}/passwall2" >> /etc/apk/repositories
                 fi
               fi
             fi
@@ -268,62 +269,61 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Consolidated dynamic downloader for PeDitXOS/xtemple assets
-          download_xtemple_assets() {
-            echo "--> Fetching custom themes and tools from PeDitXOS/xtemple..."
-            local API_URL="https://api.github.com/repos/PeDitXOS/xtemple/releases/latest"
-            # Added GITHUB_TOKEN to bypass GitHub API rate-limits securely
-            local API_RESPONSE=$(curl -sL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
-            if ! echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
-              echo "::warning::Could not fetch assets from PeDitXOS/xtemple repository."
-              return 1
-            fi
-            
-            # Download luci-theme-peditx
-            local PEDITX_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | startswith("luci-theme-peditx_") and endswith($EXT)) | .browser_download_url' | head -n 1)
-            if [ -n "$PEDITX_URL" ] && [ "$PEDITX_URL" != "null" ]; then
-              wget -q "$PEDITX_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading peditx theme"
-              echo "--> Successfully downloaded luci-theme-peditx"
-            fi
-            
-            # Download luci-theme-carbonpx
-            local CARBON_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | startswith("luci-theme-carbonpx_") and endswith($EXT)) | .browser_download_url' | head -n 1)
-            if [ -n "$CARBON_URL" ] && [ "$CARBON_URL" != "null" ]; then
-              wget -q "$CARBON_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading carbonpx theme"
-              echo "--> Successfully downloaded luci-theme-carbonpx"
-            fi
-            
-            # Download luci-app-themeswitch (Skip if target is legacy x86/generic)
-            if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
-              local SWITCH_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" --arg ARCH "${{ env.TARGET_ARCH }}" '.assets[] | select(.name | startswith("luci-app-themeswitch_") and (contains($ARCH) or contains("all")) and endswith($EXT)) | .browser_download_url' | head -n 1)
-              # Fallback if specific architecture string is not matched directly
-              if [ -z "$SWITCH_URL" ] || [ "$SWITCH_URL" = "null" ]; then
-                SWITCH_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | startswith("luci-app-themeswitch_") and endswith($EXT)) | .browser_download_url' | head -n 1)
+          # Dynamic package downloader that supports both .apk and .ipk dynamically (with wget non-blocking fallback)
+          download_latest_pkg() {
+            local REPO_PATH="$1"
+            if [ -z "$REPO_PATH" ]; then return; fi
+            echo "--> Attempting to download ${REPO_PATH} with extension .${{ env.PKG_EXT }}..."
+            local API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
+            local API_RESPONSE=$(curl -sL "$API_URL")
+            if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
+              local PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | endswith($EXT)) | .browser_download_url' | head -n 1)
+              if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
+                wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading package $REPO_PATH"
+                echo "--> Successfully downloaded ${REPO_PATH}"
+              else
+                echo "::warning::Found release for ${REPO_PATH}, but no .${{ env.PKG_EXT }} file was found."
               fi
-              if [ -n "$SWITCH_URL" ] && [ "$SWITCH_URL" != "null" ]; then
-                wget -q "$SWITCH_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading themeswitch tool"
-                echo "--> Successfully downloaded luci-app-themeswitch"
+            else
+              echo "::warning::Could not find a valid release for ${REPO_PATH}. Skipping."
+            fi
+          }
+
+          download_themeswitch() {
+            local REPO_PATH="peditx/luci-app-themeswitch"
+            echo "--> Attempting to download ${REPO_PATH} for arch ${{ env.TARGET_ARCH }}..."
+            local API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
+            local API_RESPONSE=$(curl -sL --fail "$API_URL") || { echo "::error::Failed to fetch latest release."; exit 1; }
+
+            if echo "${API_RESPONSE}" | jq -e '.tag_name' > /dev/null; then
+              local LATEST_VERSION=$(echo "${API_RESPONSE}" | jq -r '.tag_name')
+              local PKG_FILENAME="luci-app-themeswitch_${LATEST_VERSION}_${{ env.TARGET_ARCH }}.${{ env.PKG_EXT }}"
+              local PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${PKG_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
+
+              if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
+                wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed to download themeswitch package"
+                echo "--> Successfully downloaded ${PKG_FILENAME}"
+              else
+                echo "::error::Could not find ${PKG_FILENAME} in the latest release."
+                exit 1
               fi
+            else
+              echo "::error::Could not find a valid release tag for ${REPO_PATH}."
+              exit 1
             fi
           }
 
           download_passwall_bundle() {
             local PASSWALL_REPO_PATH="$1"
             echo "--> Attempting to download dependency bundle for ${PASSWALL_REPO_PATH}..."
+            download_latest_pkg "${PASSWALL_REPO_PATH}"
             local API_URL="https://api.github.com/repos/${PASSWALL_REPO_PATH}/releases/latest"
-            # Added GITHUB_TOKEN to bypass GitHub API rate-limits securely
-            local API_RESPONSE=$(curl -sL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
+            local API_RESPONSE=$(curl -sL "$API_URL")
             if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
-              # Download primary Passwall interface ipk/apk
-              local PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | endswith($EXT)) | .browser_download_url' | head -n 1)
-              if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
-                wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading passwall package"
-              fi
-              # Download architecture dependency bundles zip
               local ZIP_FILENAME="passwall_packages_${{ env.PKG_EXT }}_${{ env.TARGET_ARCH }}.zip"
               local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url')
               if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
-                wget -q "${ZIP_URL}" -O dependencies.zip || echo "Warning: Failed downloading passwall zip bundle"
+                wget -q "${ZIP_URL}" -O dependencies.zip || echo "Warning: Failed to download passwall zip bundle"
                 unzip -qo dependencies.zip -d "${CUSTOM_PKG_DIR}" || echo "Warning: Extraction failed"
                 rm -f dependencies.zip
                 echo "--> Successfully downloaded dependency bundle for ${PASSWALL_REPO_PATH}"
@@ -335,9 +335,12 @@ jobs:
             fi
           }
 
-          # Invoke xtemple download pipeline safely without crashing the step on remote GitHub API failures
-          download_xtemple_assets || echo "Warning: Skipping non-fatal xtemple theme asset fetching issues"
-
+          download_latest_pkg "peditx/luci-theme-peditx"
+          download_latest_pkg "peditx/luci-theme-carbonpx"
+          if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
+            download_themeswitch
+          fi
+          
           # Convert extra packages to lowercase to prevent mobile capitalization errors
           EXTRA_PKGS_LOWER=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
           for pkg in $EXTRA_PKGS_LOWER; do
@@ -348,19 +351,6 @@ jobs:
               download_passwall_bundle "peditx/openwrt-passwall2"
             fi
           done
-
-          # Index downloaded APK packages if any exist to make them visible to the APK package manager and prevent packages.adb warnings
-          if [ "${{ env.IS_APK }}" = "true" ]; then
-            echo "--> Indexing local custom APK packages..."
-            cd "${CUSTOM_PKG_DIR}"
-            if ls *.apk &>/dev/null; then
-              apk index -o APKINDEX.tar.gz *.apk || echo "Warning: apk index generation failed"
-              touch packages.adb
-            else
-              touch packages.adb
-            fi
-            cd -
-          fi
     
       - name: 'Build Firmware Image'
         id: build_image
