@@ -275,6 +275,7 @@ jobs:
           download_latest_pkg() {
             local REPO="$1"
             local SEARCH_PATTERN="$2"
+            local ARCH_PATTERN="$3"
             
             echo "--> Fetching latest from ${REPO} matching '${SEARCH_PATTERN}'..."
             local API_URL="https://api.github.com/repos/${REPO}/releases/latest"
@@ -285,22 +286,37 @@ jobs:
               return 1
             fi
             
-            # Try primary extension first (.apk or .ipk based on engine detect)
-            local URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg EXT ".${{ env.PKG_EXT }}" \
-              '.assets[] | select(.name | contains($PAT) and endswith($EXT)) | .browser_download_url' | head -n 1)
-            
-            # Fallback to IPK if APK not found
-            if [ -z "$URL" ] || [ "$URL" == "null" ]; then
-              if [ "${{ env.PKG_EXT }}" == "apk" ]; then
-                echo "::warning::No .apk found for ${SEARCH_PATTERN}, falling back to .ipk..."
-                URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" '.assets[] | select(.name | contains($PAT) and endswith(".ipk")) | .browser_download_url' | head -n 1)
+            local URL=""
+            if [ -n "$ARCH_PATTERN" ]; then
+              # Match name containing both SEARCH_PATTERN and ARCH_PATTERN, and also matching the package type (apk/ipk)
+              URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg ARCH "${ARCH_PATTERN}" --arg EXT "${{ env.PKG_EXT }}" \
+                '.assets[] | select(.name | contains($PAT) and contains($ARCH) and (contains("-" + $EXT) or endswith("." + $EXT))) | .browser_download_url' | head -n 1)
+              
+              # Fallback if no specific extension/type match is found
+              if [ -z "$URL" ] || [ "$URL" == "null" ]; then
+                echo "::warning::Strict package type match failed, trying general match..."
+                URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg ARCH "${ARCH_PATTERN}" \
+                  '.assets[] | select(.name | contains($PAT) and contains($ARCH)) | .browser_download_url' | head -n 1)
+              fi
+            else
+              # Architecture independent matching (like themes)
+              URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg EXT ".${{ env.PKG_EXT }}" \
+                '.assets[] | select(.name | contains($PAT) and endswith($EXT)) | .browser_download_url' | head -n 1)
+              
+              # Fallback to .ipk if .apk is not found for architecture-independent packages
+              if [ -z "$URL" ] || [ "$URL" == "null" ]; then
+                if [ "${{ env.PKG_EXT }}" == "apk" ]; then
+                  echo "::warning::No .apk found for ${SEARCH_PATTERN}, falling back to .ipk..."
+                  URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" \
+                    '.assets[] | select(.name | contains($PAT) and endswith(".ipk")) | .browser_download_url' | head -n 1)
+                fi
               fi
             fi
               
             if [ -n "$URL" ] && [ "$URL" != "null" ]; then
               wget -q "$URL" -P "${CUSTOM_PKG_DIR}" && echo "--> OK: $(basename $URL)"
             else
-              echo "::error::No matching package found for ${SEARCH_PATTERN} in latest release of ${REPO}"
+              echo "::error::No matching package found for ${SEARCH_PATTERN} (Arch: ${ARCH_PATTERN}) in latest release of ${REPO}"
               return 1
             fi
           }
@@ -311,7 +327,7 @@ jobs:
 
           # Download ThemeSwitch (Architecture Specific) from its new individual repository
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
-            download_latest_pkg "PeDitXOS/luci-app-themeswitch" "luci-app-themeswitch_${{ env.TARGET_ARCH }}"
+            download_latest_pkg "PeDitXOS/luci-app-themeswitch" "luci-app-themeswitch" "${{ env.TARGET_ARCH }}"
           fi
           
           # Handle Passwall Bundles safely
