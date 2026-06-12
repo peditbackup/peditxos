@@ -323,7 +323,7 @@ jobs:
             local URL=""
             if [ -n "$ARCH_PATTERN" ]; then
               # Match name containing both SEARCH_PATTERN and ARCH_PATTERN, and also matching the package type (apk/ipk)
-              URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg ARCH "${ARCH_PATTERN}" --arg EXT "${PKG_EXT}" \
+              URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg ARCH "${ARCH_PATTERN}" --arg EXT "$PKG_EXT" \
                 '.assets[] | select(.name | contains($PAT) and contains($ARCH) and (contains("-" + $EXT) or endswith("." + $EXT))) | .browser_download_url' | head -n 1)
               
               # Fallback if no specific extension/type match is found
@@ -422,7 +422,7 @@ jobs:
             fi
           done
 
-          # CRITICAL FIX: Dynamically find and use OpenWrt's native host apk tool for flawless packages.adb generation
+          # CRITICAL FIX: Dynamically find and use OpenWrt's native host apk tool with --allow-untrusted flag
           if [ "$IS_APK" = "true" ]; then
             echo "--> Scanning ImageBuilder for native host apk binary..."
             cd "${CUSTOM_PKG_DIR}"
@@ -440,9 +440,10 @@ jobs:
             
             if [ -n "$OWRT_APK" ] && [ -x "$OWRT_APK" ]; then
               if ls *.apk &>/dev/null; then
-                echo "--> Indexing $(ls *.apk | wc -l) packages into APKINDEX.tar.gz and packages.adb..."
-                "$OWRT_APK" index -o APKINDEX.tar.gz *.apk
-                "$OWRT_APK" index -o packages.adb *.apk
+                echo "--> Indexing $(ls *.apk | wc -l) packages into APKINDEX.tar.gz and packages.adb (with trust flag)..."
+                # Added --allow-untrusted flag to safely index all custom packages bypass host verification errors
+                "$OWRT_APK" index --allow-untrusted -o APKINDEX.tar.gz *.apk
+                "$OWRT_APK" index --allow-untrusted -o packages.adb *.apk
               fi
             else
               echo "::error::Could not find a valid runnable native host apk binary inside the ImageBuilder directory."
