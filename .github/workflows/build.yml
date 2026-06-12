@@ -60,7 +60,7 @@ jobs:
       - name: 'Install Build Dependencies'
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp apk-tools
           
           # Forcefully register the universe repository to guarantee package availability
           sudo add-apt-repository -y universe || true
@@ -87,15 +87,12 @@ jobs:
           TARGET_ARCH="${{ github.event.inputs.target_arch }}"
           echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
           
-          # Proxy all potential internal ImageBuilder source files to our custom repository server with correct path prefix (/openwrt)
+          # Disable signature checking inside the compilation environment for safe local packages indexing
           find "${IMAGEBUILDER_DIR}" -type f \( -name "repositories.conf" -o -name "repositories" -o -name "apk.conf" \) 2>/dev/null | while read -r file; do
-            echo "Adjusting sources in: $file"
-            sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' "$file"
-            sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' "$file"
-            sed -i 's/^option check_signature.*/option check_signature 0/' "$file"
+            sed -i 's/^option check_signature.*/option check_signature 0/' "$file" 2>/dev/null || true
           done
 
-          # Download and register the public custom key to all trusted key locations within ImageBuilder (Using fallback '|| echo' to bypass 404/server crashes)
+          # Download and register the public custom key to all trusted key locations within ImageBuilder
           wget -qO /tmp/passwall.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Warning: Custom key download failed"
           if [ -f /tmp/passwall.pub ]; then
             find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
@@ -108,30 +105,7 @@ jobs:
             cp /tmp/passwall.pub "${IMAGEBUILDER_DIR}/etc/apk/keys/passwall.rsa.pub"
           fi
           
-          # Append custom Passwall feeds directly to the ImageBuilder's source files so it can fetch them natively at build time
-          OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
-          TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
-          
-          if [ -f "${IMAGEBUILDER_DIR}/apk.conf" ] || [ -d "${IMAGEBUILDER_DIR}/etc/apk" ] || grep -q -E "apk|APK" "${IMAGEBUILDER_DIR}/Makefile" 2>/dev/null; then
-            IS_APK=true
-          else
-            IS_APK=false
-          fi
-
-          find "${IMAGEBUILDER_DIR}" -type f \( -name "repositories.conf" -o -name "repositories" -o -name "apk.conf" \) 2>/dev/null | while read -r file; do
-            echo "Adding custom feeds to ImageBuilder config: $file"
-            if [ "$IS_APK" = "true" ]; then
-              echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/passwall_packages" >> "$file"
-              echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/passwall_luci" >> "$file"
-              echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/passwall2" >> "$file"
-            else
-              echo "src/gz peditxos_passwall_pkgs http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/passwall_packages" >> "$file"
-              echo "src/gz peditxos_passwall_luci http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/passwall_luci" >> "$file"
-              echo "src/gz peditxos_passwall2 http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}/passwall2" >> "$file"
-            fi
-          done
-          
-          echo "--- Signature check configurations and proxies initialized ---"
+          echo "--- Local keys successfully registered ---"
 
       - name: 'Prepare Custom Files and Scripts'
         run: |
@@ -157,9 +131,9 @@ jobs:
           OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
           TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
           
-          # --- Create Custom Repositories / Feeds for the Target System ---
+          # --- Create Custom Repositories / Feeds for the Final Router filesystem ---
           if [ "$IS_APK" = "true" ]; then
-            # Generate APK repository feeds configuration using '%a' to prevent duplicate architecture path appending by the APK manager
+            # Generate APK repository feeds configuration using '%a' for target image
             CUSTOM_REPOS_DIR="${FILES_DIR}/etc/apk"
             mkdir -p "${CUSTOM_REPOS_DIR}"
             CUSTOM_REPOS_FILE="${CUSTOM_REPOS_DIR}/repositories"
@@ -173,9 +147,9 @@ jobs:
             echo "$BASE_URL/passwall_luci" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall_packages" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
-            echo "--- APK repositories config generated ---"
+            echo "--- Target APK repositories config generated ---"
           else
-            # Generate legacy OPKG customfeeds configuration
+            # Generate legacy OPKG customfeeds configuration for target image
             CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
             mkdir -p "${CUSTOM_FEEDS_DIR}"
             CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
@@ -185,7 +159,7 @@ jobs:
             echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" >> "${CUSTOM_FEEDS_FILE}"
             echo "src/gz peditxos_passwall_pkgs $BASE_URL/passwall_packages" >> "${CUSTOM_FEEDS_FILE}"
             echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "${CUSTOM_FEEDS_FILE}"
-            echo "--- Custom OPKG feeds generated ---"
+            echo "--- Target OPKG custom feeds generated ---"
           fi
 
           # --- Branding Strategy ---
@@ -206,7 +180,7 @@ jobs:
           EOF
           echo "--- os-release file generated ---"
 
-          # --- Create UCI Defaults Script with engine-adaptive fallback logic ---
+          # --- Create UCI Defaults Script ---
           UCI_SCRIPT_DIR="${FILES_DIR}/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
@@ -214,7 +188,6 @@ jobs:
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
           cat << 'EOF_SCRIPT' >> "${UCI_SCRIPT_PATH}"
-          # 1. Handle Legacy OPKG environment if detected
           if [ -d /etc/opkg ]; then
             if [ -f /etc/opkg.conf ]; then
               sed -i 's/option check_signature/# option check_signature/g' /etc/opkg.conf
@@ -228,27 +201,11 @@ jobs:
             rm -f /tmp/passwall.pub
           fi
 
-          # 2. Handle Modern APK (OpenWrt 25+) environment if detected
           if [ -d /etc/apk ]; then
             if [ -f /etc/apk/repositories ]; then
               sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
               sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
-              
-              # Safely append dynamic APK repositories fallback if needed
-              if ! grep -q "openwrt-passwall-build" /etc/apk/repositories 2>/dev/null; then
-                if [ -f /etc/openwrt_release ]; then
-                  . /etc/openwrt_release
-                  V_MAJOR=$(echo "$DISTRIB_RELEASE" | cut -d. -f1-2)
-                  V_ARCH="$DISTRIB_ARCH"
-                fi
-                if [ -n "$V_MAJOR" ] && [ -n "$V_ARCH" ]; then
-                  echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${V_MAJOR}/${V_ARCH}/passwall_packages" >> /etc/apk/repositories
-                  echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${V_MAJOR}/${V_ARCH}/passwall_luci" >> /etc/apk/repositories
-                  echo "http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${V_MAJOR}/${V_ARCH}/passwall2" >> /etc/apk/repositories
-                fi
-              fi
             fi
-            # Place signature keys properly into APK database with wget fallback
             mkdir -p /etc/apk/keys
             wget -qO /etc/apk/keys/passwall.rsa.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub > /dev/null 2>&1 || echo "Failed to download custom APK public key"
           fi
@@ -311,22 +268,18 @@ jobs:
             
             local URL=""
             if [ -n "$ARCH_PATTERN" ]; then
-              # Match name containing both SEARCH_PATTERN and ARCH_PATTERN, and also matching the package type (apk/ipk)
               URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg ARCH "${ARCH_PATTERN}" --arg EXT "$PKG_EXT" \
                 '.assets[] | select(.name | contains($PAT) and contains($ARCH) and (contains("-" + $EXT) or endswith("." + $EXT))) | .browser_download_url' | head -n 1)
               
-              # Fallback if no specific extension/type match is found
               if [ -z "$URL" ] || [ "$URL" == "null" ]; then
                 echo "::warning::Strict package type match failed, trying general match..."
                 URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg ARCH "${ARCH_PATTERN}" \
                   '.assets[] | select(.name | contains($PAT) and contains($ARCH)) | .browser_download_url' | head -n 1)
               fi
             else
-              # Architecture independent matching (like themes)
               URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg EXT ".${PKG_EXT}" \
                 '.assets[] | select(.name | contains($PAT) and endswith($EXT)) | .browser_download_url' | head -n 1)
               
-              # Fallback to .ipk if .apk is not found for architecture-independent packages
               if [ -z "$URL" ] || [ "$URL" == "null" ]; then
                 if [ "$PKG_EXT" = "apk" ]; then
                   echo "::warning::No .apk found for ${SEARCH_PATTERN}, falling back to .ipk..."
@@ -344,16 +297,16 @@ jobs:
             fi
           }
 
-          # Download Themes (Architecture Independent) from their new individual repositories
+          # Download Themes (Architecture Independent)
           download_latest_pkg "PeDitXOS/luci-theme-peditx" "luci-theme-peditx"
           download_latest_pkg "PeDitXOS/luci-theme-carbonPX" "luci-theme-carbonpx"
 
-          # Download ThemeSwitch (Architecture Specific) from its new individual repository
+          # Download ThemeSwitch (Architecture Specific)
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
             download_latest_pkg "PeDitXOS/luci-app-themeswitch" "luci-app-themeswitch" "$TARGET_ARCH"
           fi
           
-          # Download Passwall & Passwall2 bundles from OFFICIAL repositories
+          # Download Passwall & Passwall2 bundles
           download_passwall_bundle() {
             local PASSWALL_REPO_PATH="$1"
             local PKG_NAME="$2"
@@ -362,11 +315,9 @@ jobs:
             local API_RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
             
             if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null 2>&1; then
-              # Try to find architecture-specific zip bundle first
               local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg ARCH "$TARGET_ARCH" --arg EXT "$PKG_EXT" \
                 '.assets[] | select(.name | contains("passwall_packages") and contains($EXT) and contains($ARCH) and endswith("zip")) | .browser_download_url' | head -n 1)
               
-              # Fallback to generic zip if arch-specific not found
               if [ -z "$ZIP_URL" ] || [ "$ZIP_URL" = "null" ]; then
                 ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg ARCH "$TARGET_ARCH" \
                   '.assets[] | select(.name | contains("passwall_packages") and contains($ARCH) and endswith("zip")) | .browser_download_url' | head -n 1)
@@ -379,7 +330,6 @@ jobs:
                 echo "--> Successfully downloaded dependency bundle for ${PASSWALL_REPO_PATH}"
               else
                 echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO_PATH}. Trying individual package..."
-                # Fallback to individual ipk/apk
                 local PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg NAME "$PKG_NAME" --arg EXT ".${PKG_EXT}" \
                   '.assets[] | select(.name | contains($NAME) and endswith($EXT)) | .browser_download_url' | head -n 1)
                 
@@ -410,11 +360,25 @@ jobs:
               download_passwall_bundle "Openwrt-Passwall/openwrt-passwall2" "luci-app-passwall2"
             fi
           done
-          
-          # NOTE: Manual apk index commands are completely removed to prevent
-          # sandboxing issues on the GitHub Actions host.
-          # The native ImageBuilder make process handles indexing cleanly during compilation.
 
+          # CRITICAL FIX: Safe offline local packages indexing using host compiled C-based apk-tools.
+          # This fully eliminates target BusyBox applet errors and sandbox permission issues.
+          if [ "$IS_APK" = "true" ]; then
+            echo "--> Indexing local custom APK packages with host utility..."
+            cd "${CUSTOM_PKG_DIR}"
+            
+            if ls *.apk &>/dev/null; then
+              echo "--> Indexing $(ls *.apk | wc -l) packages into APKINDEX.tar.gz and packages.adb..."
+              /usr/bin/apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
+              /usr/bin/apk index --allow-untrusted -o packages.adb *.apk
+              echo "--> APK index database successfully created!"
+            else
+              echo "::error::No local custom apk files found to index"
+              exit 1
+            fi
+            cd -
+          fi
+    
       - name: 'Build Firmware Image'
         id: build_image
         run: |
