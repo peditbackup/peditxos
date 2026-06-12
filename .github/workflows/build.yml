@@ -49,7 +49,7 @@ jobs:
     name: Build Firmware
     runs-on: ubuntu-latest
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true' # Force runner to use Node 24 to resolve deprecation warnings
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true' # Prevent Node deprecation warnings on runners
 
     permissions:
       contents: 'read'
@@ -62,7 +62,7 @@ jobs:
       - name: 'Install Build Dependencies'
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp apk-tools || sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
         id: download_ib
@@ -94,33 +94,10 @@ jobs:
             sed -i 's/^option check_signature.*/option check_signature 0/' "$file"
           done
 
-          # Inject custom passwall repositories directly into ImageBuilder's active compile-time configuration files
-          OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
-          TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
-          BASE_URL="http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
-
-          # Append to compile-time APK repositories (OpenWrt 25+)
-          find "${IMAGEBUILDER_DIR}" -type f \( -name "repositories" -o -name "apk.conf" \) 2>/dev/null | while read -r file; do
-            echo "Injecting Passwall APK repositories into $file"
-            echo "$BASE_URL/passwall_luci" >> "$file"
-            echo "$BASE_URL/passwall_packages" >> "$file"
-            echo "$BASE_URL/passwall2" >> "$file"
-          done
-
-          # Append to compile-time OPKG custom feeds (OpenWrt 24 and older)
-          OPKG_REPOS_FILE="${IMAGEBUILDER_DIR}/repositories.conf"
-          if [ -f "$OPKG_REPOS_FILE" ]; then
-            echo "Injecting Passwall OPKG feeds into $OPKG_REPOS_FILE"
-            echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" >> "$OPKG_REPOS_FILE"
-            echo "src/gz peditxos_passwall_pkgs $BASE_URL/passwall_packages" >> "$OPKG_REPOS_FILE"
-            echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "$OPKG_REPOS_FILE"
-          fi
-
-          # Download and register the public custom key to all trusted key locations within ImageBuilder to bypass signature errors
+          # Download and register the public custom key to all trusted key locations within ImageBuilder (Using fallback '|| echo' to bypass 404/server crashes)
           find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
-            echo "Adding custom signature keys to: $dir"
-            wget -qO "$dir/passwall.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || true
-            wget -qO "$dir/passwall.rsa.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || true
+            echo "Adding custom signature key to: $dir"
+            wget -qO "$dir/passwall.rsa.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Warning: Custom key download failed, proceeding without key registration inside ImageBuilder"
           done
           
           echo "--- Signature check configurations and proxies initialized ---"
@@ -159,7 +136,7 @@ jobs:
           echo "IS_APK=${IS_APK}" >> $GITHUB_ENV
           echo "PKG_EXT=${PKG_EXT}" >> $GITHUB_ENV
           
-          # --- Create Custom Repositories / Feeds for the target built OS ---
+          # --- Create Custom Repositories / Feeds ---
           if [ "$IS_APK" = "true" ]; then
             # Generate APK repository feeds configuration aligning with repository.peditxos.ir layout
             CUSTOM_REPOS_DIR="${FILES_DIR}/etc/apk"
@@ -177,7 +154,7 @@ jobs:
             echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
             echo "--- APK repositories config generated ---"
           else
-            # Generate legacy OPKG custom feeds configuration
+            # Generate legacy OPKG customfeeds configuration
             CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
             mkdir -p "${CUSTOM_FEEDS_DIR}"
             CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
@@ -252,8 +229,7 @@ jobs:
             fi
             # Place signature keys properly into APK database with wget fallback
             mkdir -p /etc/apk/keys
-            wget -qO /etc/apk/keys/passwall.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub > /dev/null 2>&1 || true
-            wget -qO /etc/apk/keys/passwall.rsa.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub > /dev/null 2>&1 || true
+            wget -qO /etc/apk/keys/passwall.rsa.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub > /dev/null 2>&1 || echo "Failed to download custom APK public key"
           fi
           EOF_SCRIPT
 
@@ -295,7 +271,7 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Dynamic repository package parser that maps to PeDitXOS/xtemple custom subdirectories with Strict Architecture Guard
+          # Dynamic repository package parser that scans the folder layout of PeDitXOS/xtemple
           download_xtemple_package() {
             local PKG_NAME="$1"     # e.g., luci-theme-peditx
             local SUB_DIR="$2"      # apk or ipk
@@ -303,41 +279,50 @@ jobs:
 
             echo "--> Resolving latest tree contents for $PKG_NAME..."
             local API_URL="https://api.github.com/repos/PeDitXOS/xtemple/contents/${PKG_NAME}"
-            local RESPONSE=$(curl -sL "$API_URL")
+            
+            # Request containing GitHub Secret Token to eliminate rate limits on Github runners
+            local RESPONSE=$(curl -sL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
 
-            # Extract highest semver directory folder name (e.g. v1.2.3)
-            local LATEST_VER=$(echo "$RESPONSE" | jq -r '.[] | select(.type == "dir" and (.name | startswith("v"))) | .name' | sort -V | tail -n 1)
+            # Validate that the response is a JSON array
+            local IS_ARRAY=$(echo "$RESPONSE" | jq -r 'type == "array"')
+            if [ "$IS_ARRAY" != "true" ]; then
+              local ERR_MSG=$(echo "$RESPONSE" | jq -r '.message // "Rate limiting or authentication error"')
+              echo "::warning::GitHub API error: $ERR_MSG"
+              return 1
+            fi
+
+            # Extract highest semver version directory
+            local LATEST_VER=$(echo "$RESPONSE" | jq -r 'if type == "array" then .[] | select(.type == "dir" and (.name | startswith("v"))) | .name else empty end' | sort -V | tail -n 1)
             if [ -z "$LATEST_VER" ] || [ "$LATEST_VER" = "null" ]; then
               echo "::warning::Could not resolve valid version folder inside PeDitXOS/xtemple/${PKG_NAME}."
               return 1
             fi
             echo "--> Selected latest version: $LATEST_VER"
 
-            # Query folder list for the respective packaging engine (apk or ipk)
+            # Scrutinize files within the subfolder (apk or ipk)
             local TARGET_FOLDER_URL="https://api.github.com/repos/PeDitXOS/xtemple/contents/${PKG_NAME}/${LATEST_VER}/${SUB_DIR}"
-            local FOLDER_RESPONSE=$(curl -sL "$TARGET_FOLDER_URL")
-            if ! echo "$FOLDER_RESPONSE" | jq -e '.[]' > /dev/null 2>&1; then
+            local FOLDER_RESPONSE=$(curl -sL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$TARGET_FOLDER_URL")
+            
+            local IS_FOLDER_ARRAY=$(echo "$FOLDER_RESPONSE" | jq -r 'type == "array"')
+            if [ "$IS_FOLDER_ARRAY" != "true" ]; then
               echo "::warning::Folder empty or unavailable: ${PKG_NAME}/${LATEST_VER}/${SUB_DIR}"
               return 1
             fi
 
-            # Resolve actual download link with strict target architecture parsing
+            # Select download url matching target architecture specifications
             local DOWNLOAD_URL=""
             if [ -n "$ARCH_FILTER" ] && [ "$ARCH_FILTER" != "all" ]; then
-              # Attempt to download arch-specific package first
               DOWNLOAD_URL=$(echo "$FOLDER_RESPONSE" | jq -r --arg EXT ".${{ env.PKG_EXT }}" --arg ARCH "$ARCH_FILTER" '.[] | select(.type == "file" and (.name | endswith($EXT)) and (.name | contains($ARCH))) | .download_url' | head -n 1)
-              # Fallback to general architecture agnostic "all" package if specific arch fails
               if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
                 DOWNLOAD_URL=$(echo "$FOLDER_RESPONSE" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.[] | select(.type == "file" and (.name | endswith($EXT)) and (.name | contains("all"))) | .download_url' | head -n 1)
               fi
             fi
 
-            # Absolute generic fallback ONLY if arch-specific or arch-agnostic filters did not return a match
             if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
               DOWNLOAD_URL=$(echo "$FOLDER_RESPONSE" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.[] | select(.type == "file" and (.name | endswith($EXT))) | .download_url' | head -n 1)
             fi
 
-            # STRICT SECURITY GUARD: If the resolved URL contains an incompatible target arch name in filename, discard it!
+            # Discard package if architecture mismatch is confirmed in file naming conventions
             if [ -n "$DOWNLOAD_URL" ] && [ "$DOWNLOAD_URL" != "null" ]; then
               local FN=$(basename "$DOWNLOAD_URL" | tr '[:upper:]' '[:lower:]')
               local IS_INCOMPATIBLE=false
@@ -399,7 +384,7 @@ jobs:
             fi
           }
 
-          # Execute xtemple download flow
+          # Invoke download pipelines
           download_xtemple_assets
 
           # Convert extra packages to lowercase to prevent mobile capitalization errors
@@ -412,34 +397,6 @@ jobs:
               download_passwall_bundle "peditx/openwrt-passwall2"
             fi
           done
-
-          # Automatically index local custom APK packages if any exist, safely guarding empty runs
-          if [ "${{ env.IS_APK }}" = "true" ]; then
-            echo "--> Indexing local custom APK packages..."
-            cd "${CUSTOM_PKG_DIR}"
-            
-            # Check if there are any .apk files present safely
-            if ls *.apk &>/dev/null; then
-              # Locate standalone apk host tool binary or fallback to newly installed host package-manager
-              APK_TOOL=$(find ../staging_dir -name apk -type f 2>/dev/null | head -n 1)
-              if [ -z "$APK_TOOL" ]; then
-                if command -v apk &>/dev/null; then
-                  APK_TOOL="apk"
-                fi
-              fi
-              
-              if [ -n "$APK_TOOL" ]; then
-                echo "Using APK indexing engine: $APK_TOOL"
-                $APK_TOOL index -o packages.adb *.apk || echo "Warning: Standalone apk index builder execution failed"
-              else
-                echo "::warning::Could not locate APK indexing tool. Local custom package installation might fail!"
-              fi
-            else
-              echo "No local .apk packages found to index. Creating empty packages.adb"
-              touch packages.adb
-            fi
-            cd -
-          fi
     
       - name: 'Build Firmware Image'
         id: build_image
@@ -450,12 +407,12 @@ jobs:
           # --- Smart Package Selection Logic ---
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx"
           
-          # Safely verify if luci-app-themeswitch was actually downloaded for current architecture target before including it
+          # Verify if themeswitch was downloaded and matches target architecture before trying to compile
           if ls "${{ env.IMAGEBUILDER_DIR }}/packages"/luci-app-themeswitch* 1>/dev/null 2>&1; then
             THEME_PACKAGES="${THEME_PACKAGES} luci-app-themeswitch"
-            echo "luci-app-themeswitch found and included."
+            echo "luci-app-themeswitch verified and included in build packages."
           else
-            echo "luci-app-themeswitch NOT found or is incompatible with target architecture. Excluding from build targets."
+            echo "luci-app-themeswitch not found or excluded due to arch mismatch."
           fi
 
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup"
@@ -631,9 +588,12 @@ jobs:
           SF_PROJECT_NAME: ${{ secrets.SF_PROJECT_NAME }}
         run: |
           mkdir -p ~/.ssh
-          # Clean carriage returns and ensure proper OpenSSH key formatting
+          
+          # Clean carriage returns from Windows copy-paste and ensure standard OpenSSH formatting
           echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+          echo "" >> ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
           
           REMOTE_BASE_DIR="/home/frs/project/${SF_PROJECT_NAME}/users"
           REMOTE_UPLOAD_DIR="${REMOTE_BASE_DIR}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
@@ -643,7 +603,7 @@ jobs:
           echo "Remote directory to create: ${REMOTE_UPLOAD_DIR}"
           echo "Local file to upload: ${LOCAL_FILE_PATH}"
           
-          # Use sftp connect-program with StrictHostKeyChecking=no to bypass strict key validation
+          # Connect with Strictly disabled host/key checking bypass to ensure seamless login
           lftp -c "
           set sftp:connect-program 'ssh -a -x -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no';
           open -u ${SF_USERNAME}, sftp://frs.sourceforge.net;
