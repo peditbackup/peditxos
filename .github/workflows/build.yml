@@ -69,19 +69,20 @@ jobs:
           sudo apt-get install -y apk-tools || {
             echo "Native apk-tools failed, dynamically resolving official static compiled binary from Alpine..."
             
-            # Dynamically fetch the current package filename to avoid 404 on revision bumps
-            APK_FILENAME=$(curl -sL https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/ | grep -oE 'apk-tools-static-[0-9.]+-r[0-9]+\.apk' | head -n 1)
+            # Try resolving from multiple stable Alpine releases (v3.20, v3.21, v3.19) using browser User-Agent
+            for version in "v3.20" "v3.21" "v3.19" "edge"; do
+              echo "Checking Alpine ${version} repository..."
+              HTML=$(curl -sL -A "Mozilla/5.0" "https://dl-cdn.alpinelinux.org/alpine/${version}/main/x86_64/")
+              APK_FILENAME=$(echo "$HTML" | grep -oE 'apk-tools-static-[0-9.]+-r[0-9]+\.apk' | head -n 1)
+              if [ -n "$APK_FILENAME" ]; then
+                APK_URL="https://dl-cdn.alpinelinux.org/alpine/${version}/main/x86_64/${APK_FILENAME}"
+                echo "Found static APK package: ${APK_FILENAME}"
+                break
+              fi
+            done
             
-            if [ -z "$APK_FILENAME" ]; then
-              echo "Primary mirror query failed, trying edge channel..."
-              APK_FILENAME=$(curl -sL https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/ | grep -oE 'apk-tools-static-[0-9.]+-r[0-9]+\.apk' | head -n 1)
-              APK_URL="https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/${APK_FILENAME}"
-            else
-              APK_URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/${APK_FILENAME}"
-            fi
-            
-            if [ -z "$APK_FILENAME" ]; then
-              echo "::error::Could not resolve apk-tools-static filename from Alpine mirrors."
+            if [ -z "$APK_URL" ]; then
+              echo "::error::Could not dynamically resolve apk-tools-static filename from Alpine mirrors."
               exit 1
             fi
             
@@ -129,10 +130,17 @@ jobs:
           done
 
           # Download and register the public custom key to all trusted key locations within ImageBuilder (Using fallback '|| echo' to bypass 404/server crashes)
-          find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
-            echo "Adding custom signature key to: $dir"
-            wget -qO "$dir/passwall.rsa.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Warning: Custom key download failed, proceeding without key registration inside ImageBuilder"
-          done
+          wget -qO /tmp/passwall.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Warning: Custom key download failed"
+          if [ -f /tmp/passwall.pub ]; then
+            find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
+              echo "Adding custom signature key to: $dir"
+              cp /tmp/passwall.pub "$dir/passwall.rsa.pub"
+              cp /tmp/passwall.pub "$dir/passwall.pub"
+            done
+            # Keep host local build environment trusted as well
+            mkdir -p "${IMAGEBUILDER_DIR}/etc/apk/keys"
+            cp /tmp/passwall.pub "${IMAGEBUILDER_DIR}/etc/apk/keys/passwall.rsa.pub"
+          fi
           
           echo "--- Signature check configurations and proxies initialized ---"
 
@@ -145,9 +153,9 @@ jobs:
           TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
           VERSION_MAJOR=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1)
           
-          # Safe dynamic integer evaluation for APK engine detection (Supports version >= 24 or snapshots)
+          # Safe dynamic integer evaluation for APK engine detection (Supports version >= 25 or snapshots)
           if [ "$VERSION_MAJOR" -eq "$VERSION_MAJOR" ] 2>/dev/null; then
-            if [ "$VERSION_MAJOR" -ge 24 ]; then
+            if [ "$VERSION_MAJOR" -ge 25 ]; then
               IS_APK=true
             else
               IS_APK=false
@@ -241,7 +249,7 @@ jobs:
             rm -f /tmp/passwall.pub
           fi
 
-          # 2. Handle Modern APK (OpenWrt 24+) environment if detected
+          # 2. Handle Modern APK (OpenWrt 25+) environment if detected
           if [ -d /etc/apk ]; then
             if [ -f /etc/apk/repositories ]; then
               sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
@@ -375,12 +383,19 @@ jobs:
             if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
               # Download primary Passwall interface ipk/apk
               local PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | endswith($EXT)) | .browser_download_url' | head -n 1)
+              if [ -z "$PKG_URL" ] || [ "$PKG_URL" = "null" ]; then
+                if [ "${{ env.PKG_EXT }}" == "apk" ]; then
+                  PKG_URL=$(echo "${API_RESPONSE}" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
+                fi
+              fi
               if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
                 wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading passwall package"
               fi
-              # Download architecture dependency bundles zip
-              local ZIP_FILENAME="passwall_packages_${{ env.PKG_EXT }}_${{ env.TARGET_ARCH }}.zip"
-              local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg FILENAME "${ZIP_FILENAME}" '.assets[] | select(.name == $FILENAME) | .browser_download_url' | head -n 1)
+              # Download architecture dependency bundles zip (supports both custom prefix and standard bundle signatures)
+              local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg ARCH "${{ env.TARGET_ARCH }}" --arg EXT "${{ env.PKG_EXT }}" '.assets[] | select(.name | contains("passwall_packages") and contains($EXT) and contains($ARCH) and endswith("zip")) | .browser_download_url' | head -n 1)
+              if [ -z "$ZIP_URL" ] || [ "$ZIP_URL" = "null" ]; then
+                ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg ARCH "${{ env.TARGET_ARCH }}" '.assets[] | select(.name | contains("passwall_packages") and contains($ARCH) and endswith("zip")) | .browser_download_url' | head -n 1)
+              fi
               if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
                 wget -q "${ZIP_URL}" -O deps.zip || echo "Warning: Failed downloading passwall zip bundle"
                 unzip -qo deps.zip -d "${CUSTOM_PKG_DIR}" || echo "Warning: Extraction failed"
@@ -410,8 +425,9 @@ jobs:
             echo "--> Indexing local custom APK packages..."
             cd "${CUSTOM_PKG_DIR}"
             if ls *.apk &>/dev/null; then
-              # Index both official and newly downloaded APKs directly into packages.adb (with no touch empty bypass)
-              apk index -o packages.adb *.apk || echo "Warning: apk index generation failed"
+              # Index both official and newly downloaded APKs directly into dual packages.adb and APKINDEX.tar.gz structures
+              apk index -o APKINDEX.tar.gz *.apk || echo "Warning: APKINDEX generation failed"
+              apk index -o packages.adb *.apk || echo "Warning: packages.adb generation failed"
             fi
             cd -
           fi
@@ -420,7 +436,6 @@ jobs:
         id: build_image
         run: |
           cd "${{ env.IMAGEBUILDER_DIR }}"
-          make clean
           
           # --- Smart Package Selection Logic ---
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
