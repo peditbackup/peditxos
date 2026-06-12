@@ -311,20 +311,32 @@ jobs:
             fi
           }
 
+          # Helper function for safe direct downloads
+          download_direct_pkg() {
+            local URL="$1"
+            local FILENAME=$(basename "$URL")
+            echo "--> Downloading $FILENAME..."
+            # Use curl with --fail to avoid downloading HTML error pages, and pass GITHUB_PAT for private repos
+            curl --fail -L -H "Authorization: token ${{ secrets.GITHUB_PAT }}" -o "${CUSTOM_PKG_DIR}/$FILENAME" "$URL" || {
+              echo "::error::Failed to download $FILENAME. Ensure the URL is correct and GITHUB_PAT has access."
+              exit 1
+            }
+          }
+
           # Download Themes directly from the specified RAW links based on the package type (apk/ipk)
           if [ "${{ env.IS_APK }}" = "true" ]; then
-            wget -q "https://github.com/PeDitXOS/xtemple/raw/main/luci-theme-peditx/v1.2.3/apk/luci-theme-peditx_1.2.3-01_all.apk" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading peditx theme apk"
-            wget -q "https://github.com/PeDitXOS/xtemple/raw/main/luci-theme-carbonpx/v1.0.5/apk/luci-theme-carbonpx-1.0.5-r01.apk" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading carbonpx theme apk"
+            download_direct_pkg "https://raw.githubusercontent.com/PeDitXOS/xtemple/main/luci-theme-peditx/v1.2.3/apk/luci-theme-peditx_1.2.3-01_all.apk"
+            download_direct_pkg "https://raw.githubusercontent.com/PeDitXOS/xtemple/main/luci-theme-carbonpx/v1.0.5/apk/luci-theme-carbonpx-1.0.5-r01.apk"
           else
-            wget -q "https://github.com/PeDitXOS/xtemple/raw/main/luci-theme-peditx/v1.2.3/ipk/luci-theme-peditx_1.2.3-01_all.ipk" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading peditx theme ipk"
-            wget -q "https://github.com/PeDitXOS/xtemple/raw/main/luci-theme-carbonpx/v1.0.5/ipk/luci-theme-carbonpx-1.0.5-r01.ipk" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading carbonpx theme ipk"
+            download_direct_pkg "https://raw.githubusercontent.com/PeDitXOS/xtemple/main/luci-theme-peditx/v1.2.3/ipk/luci-theme-peditx_1.2.3-01_all.ipk"
+            download_direct_pkg "https://raw.githubusercontent.com/PeDitXOS/xtemple/main/luci-theme-carbonpx/v1.0.5/ipk/luci-theme-carbonpx-1.0.5-r01.ipk"
           fi
 
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
             if [ "${{ env.IS_APK }}" = "true" ]; then
-              wget -q "https://github.com/PeDitXOS/xtemple/raw/main/luci-app-themeswitch/v1.0.0/apk/luci-app-themeswitch-1.0.5.apk" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading themeswitch apk"
+              download_direct_pkg "https://raw.githubusercontent.com/PeDitXOS/xtemple/main/luci-app-themeswitch/v1.0.0/apk/luci-app-themeswitch-1.0.5.apk"
             else
-              wget -q "https://github.com/PeDitXOS/xtemple/raw/main/luci-app-themeswitch/v1.0.0/ipk/luci-app-themeswitch-1.0.5.ipk" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading themeswitch ipk"
+              download_direct_pkg "https://raw.githubusercontent.com/PeDitXOS/xtemple/main/luci-app-themeswitch/v1.0.0/ipk/luci-app-themeswitch-1.0.5.ipk"
             fi
           fi
           
