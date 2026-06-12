@@ -371,10 +371,8 @@ jobs:
             echo "--> Indexing local custom APK packages..."
             cd "${CUSTOM_PKG_DIR}"
             if ls *.apk &>/dev/null; then
-              apk index -o APKINDEX.tar.gz *.apk || echo "Warning: apk index generation failed"
-              touch packages.adb
-            else
-              touch packages.adb
+              # Index both official and newly downloaded APKs directly into packages.adb (with no touch empty bypass)
+              apk index -o packages.adb *.apk || echo "Warning: apk index generation failed"
             fi
             cd -
           fi
