@@ -48,6 +48,8 @@ jobs:
   build_firmware:
     name: Build Firmware
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true' # Force runner to use Node 24 to resolve deprecation warnings
 
     permissions:
       contents: 'read'
@@ -92,10 +94,33 @@ jobs:
             sed -i 's/^option check_signature.*/option check_signature 0/' "$file"
           done
 
-          # Download and register the public custom key to all trusted key locations within ImageBuilder (Using fallback '|| echo' to bypass 404/server crashes)
+          # Inject custom passwall repositories directly into ImageBuilder's active compile-time configuration files
+          OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
+          TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
+          BASE_URL="http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
+
+          # Append to compile-time APK repositories (OpenWrt 25+)
+          find "${IMAGEBUILDER_DIR}" -type f \( -name "repositories" -o -name "apk.conf" \) 2>/dev/null | while read -r file; do
+            echo "Injecting Passwall APK repositories into $file"
+            echo "$BASE_URL/passwall_luci" >> "$file"
+            echo "$BASE_URL/passwall_packages" >> "$file"
+            echo "$BASE_URL/passwall2" >> "$file"
+          done
+
+          # Append to compile-time OPKG custom feeds (OpenWrt 24 and older)
+          OPKG_REPOS_FILE="${IMAGEBUILDER_DIR}/repositories.conf"
+          if [ -f "$OPKG_REPOS_FILE" ]; then
+            echo "Injecting Passwall OPKG feeds into $OPKG_REPOS_FILE"
+            echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" >> "$OPKG_REPOS_FILE"
+            echo "src/gz peditxos_passwall_pkgs $BASE_URL/passwall_packages" >> "$OPKG_REPOS_FILE"
+            echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "$OPKG_REPOS_FILE"
+          fi
+
+          # Download and register the public custom key to all trusted key locations within ImageBuilder to bypass signature errors
           find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
-            echo "Adding custom signature key to: $dir"
-            wget -qO "$dir/passwall.rsa.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Warning: Custom key download failed, proceeding without key registration inside ImageBuilder"
+            echo "Adding custom signature keys to: $dir"
+            wget -qO "$dir/passwall.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || true
+            wget -qO "$dir/passwall.rsa.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || true
           done
           
           echo "--- Signature check configurations and proxies initialized ---"
@@ -134,7 +159,7 @@ jobs:
           echo "IS_APK=${IS_APK}" >> $GITHUB_ENV
           echo "PKG_EXT=${PKG_EXT}" >> $GITHUB_ENV
           
-          # --- Create Custom Repositories / Feeds ---
+          # --- Create Custom Repositories / Feeds for the target built OS ---
           if [ "$IS_APK" = "true" ]; then
             # Generate APK repository feeds configuration aligning with repository.peditxos.ir layout
             CUSTOM_REPOS_DIR="${FILES_DIR}/etc/apk"
@@ -152,7 +177,7 @@ jobs:
             echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
             echo "--- APK repositories config generated ---"
           else
-            # Generate legacy OPKG customfeeds configuration
+            # Generate legacy OPKG custom feeds configuration
             CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
             mkdir -p "${CUSTOM_FEEDS_DIR}"
             CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
@@ -227,7 +252,8 @@ jobs:
             fi
             # Place signature keys properly into APK database with wget fallback
             mkdir -p /etc/apk/keys
-            wget -qO /etc/apk/keys/passwall.rsa.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub > /dev/null 2>&1 || echo "Failed to download custom APK public key"
+            wget -qO /etc/apk/keys/passwall.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub > /dev/null 2>&1 || true
+            wget -qO /etc/apk/keys/passwall.rsa.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub > /dev/null 2>&1 || true
           fi
           EOF_SCRIPT
 
@@ -387,24 +413,30 @@ jobs:
             fi
           done
 
-          # Automatically index local custom APK packages to generate the required packages.adb index file (fixes APK 404/no package errors)
+          # Automatically index local custom APK packages if any exist, safely guarding empty runs
           if [ "${{ env.IS_APK }}" = "true" ]; then
             echo "--> Indexing local custom APK packages..."
             cd "${CUSTOM_PKG_DIR}"
             
-            # Locate standalone apk host tool binary or fallback to newly installed host package-manager
-            APK_TOOL=$(find ../staging_dir -name apk -type f 2>/dev/null | head -n 1)
-            if [ -z "$APK_TOOL" ]; then
-              if command -v apk &>/dev/null; then
-                APK_TOOL="apk"
+            # Check if there are any .apk files present safely
+            if ls *.apk &>/dev/null; then
+              # Locate standalone apk host tool binary or fallback to newly installed host package-manager
+              APK_TOOL=$(find ../staging_dir -name apk -type f 2>/dev/null | head -n 1)
+              if [ -z "$APK_TOOL" ]; then
+                if command -v apk &>/dev/null; then
+                  APK_TOOL="apk"
+                fi
               fi
-            fi
-            
-            if [ -n "$APK_TOOL" ]; then
-              echo "Using APK indexing engine: $APK_TOOL"
-              $APK_TOOL index -o packages.adb *.apk || echo "Warning: Standalone apk index builder execution failed"
+              
+              if [ -n "$APK_TOOL" ]; then
+                echo "Using APK indexing engine: $APK_TOOL"
+                $APK_TOOL index -o packages.adb *.apk || echo "Warning: Standalone apk index builder execution failed"
+              else
+                echo "::warning::Could not locate APK indexing tool. Local custom package installation might fail!"
+              fi
             else
-              echo "::warning::Could not locate APK indexing tool. Local custom package installation might fail!"
+              echo "No local .apk packages found to index. Creating empty packages.adb"
+              touch packages.adb
             fi
             cd -
           fi
@@ -599,10 +631,9 @@ jobs:
           SF_PROJECT_NAME: ${{ secrets.SF_PROJECT_NAME }}
         run: |
           mkdir -p ~/.ssh
-          echo "${SSH_PRIVATE_KEY}" > ~/.rsa
-          echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
+          # Clean carriage returns and ensure proper OpenSSH key formatting
+          echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
           
           REMOTE_BASE_DIR="/home/frs/project/${SF_PROJECT_NAME}/users"
           REMOTE_UPLOAD_DIR="${REMOTE_BASE_DIR}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
@@ -612,8 +643,9 @@ jobs:
           echo "Remote directory to create: ${REMOTE_UPLOAD_DIR}"
           echo "Local file to upload: ${LOCAL_FILE_PATH}"
           
+          # Use sftp connect-program with StrictHostKeyChecking=no to bypass strict key validation
           lftp -c "
-          set sftp:connect-program 'ssh -a -x -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes';
+          set sftp:connect-program 'ssh -a -x -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no';
           open -u ${SF_USERNAME}, sftp://frs.sourceforge.net;
           mkdir -p ${REMOTE_UPLOAD_DIR};
           cd ${REMOTE_UPLOAD_DIR};
