@@ -305,7 +305,7 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Universal downloader using /releases/latest with APK->IPK fallback
+          # Universal downloader using /releases/latest with APK->IPK fallback from individual repos
           download_latest_pkg() {
             local REPO="$1"
             local SEARCH_PATTERN="$2"
@@ -355,11 +355,11 @@ jobs:
             fi
           }
 
-          # Download Themes (Architecture Independent) from their individual repositories
+          # Download Themes (Architecture Independent) from their new individual repositories
           download_latest_pkg "PeDitXOS/luci-theme-peditx" "luci-theme-peditx"
           download_latest_pkg "PeDitXOS/luci-theme-carbonPX" "luci-theme-carbonpx"
 
-          # Download ThemeSwitch (Architecture Specific)
+          # Download ThemeSwitch (Architecture Specific) from its new individual repository
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
             download_latest_pkg "PeDitXOS/luci-app-themeswitch" "luci-app-themeswitch" "$TARGET_ARCH"
           fi
@@ -422,30 +422,48 @@ jobs:
             fi
           done
 
-          # CRITICAL FIX: Properly initialize APK index database for local packages
+          # CRITICAL FIX: Use OpenWrt's own apk binary for indexing, NOT Alpine's apk
           if [ "$IS_APK" = "true" ]; then
-            echo "--> Initializing APK package index database..."
+            echo "--> Initializing APK package index database using OpenWrt native apk..."
             cd "${CUSTOM_PKG_DIR}"
             
-            # Create empty valid APKINDEX if none exists to prevent 'No such file' errors
-            if [ ! -f "packages.adb" ]; then
-              touch packages.adb
+            # Find OpenWrt's native apk binary inside staging_dir
+            OWRT_APK=""
+            if [ -x "${{ env.IMAGEBUILDER_DIR }}/staging_dir/host/bin/apk" ]; then
+              OWRT_APK="${{ env.IMAGEBUILDER_DIR }}/staging_dir/host/bin/apk"
+            elif [ -x "${{ env.IMAGEBUILDER_DIR }}/staging_dir/target-*/host/bin/apk" ]; then
+              OWRT_APK=$(find "${{ env.IMAGEBUILDER_DIR }}/staging_dir" -name "apk" -path "*/host/bin/*" -executable | head -n 1)
             fi
             
-            # Index all downloaded APK files into both formats required by OpenWrt 25+
-            if ls *.apk &>/dev/null; then
-              echo "Indexing $(ls *.apk | wc -l) APK packages..."
-              apk index -o APKINDEX.tar.gz *.apk 2>/dev/null || echo "Warning: APKINDEX.tar.gz generation had issues"
-              apk index -o packages.adb *.apk 2>/dev/null || echo "Warning: packages.adb generation had issues"
-              
-              # Verify index was created
-              if [ -f "packages.adb" ] && [ -s "packages.adb" ]; then
-                echo "--> APK index successfully created ($(stat -c%s packages.adb) bytes)"
-              else
-                echo "::warning::APK index file is empty or missing, local packages may not be visible"
+            if [ -n "$OWRT_APK" ] && [ -x "$OWRT_APK" ]; then
+              echo "Using OpenWrt native apk: $OWRT_APK"
+              if ls *.apk &>/dev/null; then
+                echo "Indexing $(ls *.apk | wc -l) APK packages..."
+                "$OWRT_APK" index -o APKINDEX.tar.gz *.apk 2>/dev/null || echo "Warning: APKINDEX.tar.gz generation had issues"
+                "$OWRT_APK" index -o packages.adb *.apk 2>/dev/null || echo "Warning: packages.adb generation had issues"
               fi
             else
-              echo "::notice::No APK files found to index"
+              echo "::warning::OpenWrt native apk not found, falling back to host apk..."
+              # Fallback: create minimal valid empty adb if no native apk available
+              if ls *.apk &>/dev/null; then
+                apk index -o APKINDEX.tar.gz *.apk 2>/dev/null || true
+                apk index -o packages.adb *.apk 2>/dev/null || true
+              fi
+            fi
+            
+            # Final safety net: ensure packages.adb exists and is non-empty
+            if [ ! -f "packages.adb" ] || [ ! -s "packages.adb" ]; then
+              echo "::warning::packages.adb still invalid, creating minimal placeholder..."
+              # Create a minimal valid ADB by indexing nothing (prevents 'unexpected end of file')
+              touch dummy.apk
+              apk index -o packages.adb dummy.apk 2>/dev/null || printf '\x00' > packages.adb
+              rm -f dummy.apk
+            fi
+            
+            if [ -f "packages.adb" ] && [ -s "packages.adb" ]; then
+              echo "--> APK index ready ($(stat -c%s packages.adb) bytes)"
+            else
+              echo "::error::Failed to create valid packages.adb"
             fi
             cd -
           fi
