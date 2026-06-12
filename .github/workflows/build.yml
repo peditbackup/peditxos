@@ -60,7 +60,7 @@ jobs:
       - name: 'Install Build Dependencies'
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp apk-tools || sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
         id: download_ib
@@ -109,9 +109,9 @@ jobs:
           TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
           VERSION_MAJOR=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1)
           
-          # Safe dynamic integer evaluation for APK engine detection (Supports version >= 25 or snapshots)
+          # Safe dynamic integer evaluation for APK engine detection (Supports version >= 24 or snapshots)
           if [ "$VERSION_MAJOR" -eq "$VERSION_MAJOR" ] 2>/dev/null; then
-            if [ "$VERSION_MAJOR" -ge 25 ]; then
+            if [ "$VERSION_MAJOR" -ge 24 ]; then
               IS_APK=true
             else
               IS_APK=false
@@ -136,17 +136,17 @@ jobs:
           
           # --- Create Custom Repositories / Feeds ---
           if [ "$IS_APK" = "true" ]; then
-            # Generate APK repository feeds configuration aligning with repository.peditxos.ir layout
+            # Generate APK repository feeds configuration using '%a' to prevent duplicate architecture path appending by the APK manager
             CUSTOM_REPOS_DIR="${FILES_DIR}/etc/apk"
             mkdir -p "${CUSTOM_REPOS_DIR}"
             CUSTOM_REPOS_FILE="${CUSTOM_REPOS_DIR}/repositories"
-            BASE_URL="http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
+            BASE_URL="http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/%a"
             
-            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/base" > "${CUSTOM_REPOS_FILE}"
-            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/luci" >> "${CUSTOM_REPOS_FILE}"
-            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/packages" >> "${CUSTOM_REPOS_FILE}"
-            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/routing" >> "${CUSTOM_REPOS_FILE}"
-            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/${TARGET_ARCH_VAR}/telephony" >> "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/base" > "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/luci" >> "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/packages" >> "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/routing" >> "${CUSTOM_REPOS_FILE}"
+            echo "http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/telephony" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall_luci" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall_packages" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
@@ -205,7 +205,7 @@ jobs:
             rm -f /tmp/passwall.pub
           fi
 
-          # 2. Handle Modern APK (OpenWrt 25+) environment if detected
+          # 2. Handle Modern APK (OpenWrt 24+) environment if detected
           if [ -d /etc/apk ]; then
             if [ -f /etc/apk/repositories ]; then
               sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
@@ -271,32 +271,21 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Robust downloader with Tag Fallback and APK->IPK Fallback
-          download_theme_pkg() {
+          # Universal downloader using /releases/latest with APK->IPK fallback from individual repos
+          download_latest_pkg() {
             local REPO="$1"
-            local TAG_PRIMARY="$2"
-            local TAG_FALLBACK="$3"  # Can be empty
-            local SEARCH_PATTERN="$4"
+            local SEARCH_PATTERN="$2"
             
-            echo "--> Fetching ${REPO} @ ${TAG_PRIMARY}..."
-            local API_URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG_PRIMARY}"
+            echo "--> Fetching latest from ${REPO} matching '${SEARCH_PATTERN}'..."
+            local API_URL="https://api.github.com/repos/${REPO}/releases/latest"
             local RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
             
-            # If primary tag fails and fallback exists, try fallback
             if ! echo "$RESPONSE" | jq -e '.assets' > /dev/null 2>&1; then
-              if [ -n "$TAG_FALLBACK" ]; then
-                echo "::warning::Tag ${TAG_PRIMARY} not found or invalid. Trying fallback ${TAG_FALLBACK}..."
-                API_URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG_FALLBACK}"
-                RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
-              fi
-            fi
-            
-            if ! echo "$RESPONSE" | jq -e '.assets' > /dev/null 2>&1; then
-              echo "::error::Invalid API response for ${REPO}. Neither ${TAG_PRIMARY} nor ${TAG_FALLBACK} worked."
+              echo "::error::Invalid API response or no releases found for ${REPO}"
               return 1
             fi
             
-            # Try primary extension first
+            # Try primary extension first (.apk or .ipk based on engine detect)
             local URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg EXT ".${{ env.PKG_EXT }}" \
               '.assets[] | select(.name | contains($PAT) and endswith($EXT)) | .browser_download_url' | head -n 1)
             
@@ -311,18 +300,18 @@ jobs:
             if [ -n "$URL" ] && [ "$URL" != "null" ]; then
               wget -q "$URL" -P "${CUSTOM_PKG_DIR}" && echo "--> OK: $(basename $URL)"
             else
-              echo "::error::No matching package found for ${SEARCH_PATTERN} in ${REPO}"
+              echo "::error::No matching package found for ${SEARCH_PATTERN} in latest release of ${REPO}"
               return 1
             fi
           }
 
-          # Download Themes (No fallback tag needed as they work fine)
-          download_theme_pkg "PeDitXOS/luci-theme-peditx" "v1.2.3" "" "luci-theme-peditx"
-          download_theme_pkg "PeDitXOS/luci-theme-carbonPX" "v1.0.5" "" "luci-theme-carbonpx"
+          # Download Themes (Architecture Independent) from their new individual repositories
+          download_latest_pkg "PeDitXOS/luci-theme-peditx" "luci-theme-peditx"
+          download_latest_pkg "PeDitXOS/luci-theme-carbonPX" "luci-theme-carbonpx"
 
-          # Download ThemeSwitch WITH TAG FALLBACK (v1.0.5 -> v1.0.0)
+          # Download ThemeSwitch (Architecture Specific) from its new individual repository
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
-            download_theme_pkg "PeDitXOS/luci-app-themeswitch" "v1.0.5" "v1.0.0" "luci-app-themeswitch_${{ env.TARGET_ARCH }}"
+            download_latest_pkg "PeDitXOS/luci-app-themeswitch" "luci-app-themeswitch_${{ env.TARGET_ARCH }}"
           fi
           
           # Handle Passwall Bundles safely
@@ -360,6 +349,19 @@ jobs:
               fi
             fi
           done
+
+          # Index downloaded APK packages if any exist to make them visible to the APK package manager during build
+          if [ "${{ env.IS_APK }}" = "true" ]; then
+            echo "--> Indexing local custom APK packages..."
+            cd "${CUSTOM_PKG_DIR}"
+            if ls *.apk &>/dev/null; then
+              apk index -o APKINDEX.tar.gz *.apk || echo "Warning: apk index generation failed"
+              touch packages.adb
+            else
+              touch packages.adb
+            fi
+            cd -
+          fi
     
       - name: 'Build Firmware Image'
         id: build_image
@@ -397,7 +399,7 @@ jobs:
           if [[ "$APPLY_LOW_FLASH_RESTRICTIONS" == "true" ]]; then
             THEME_PACKAGES=""
             echo "::notice::Removing non-essential base packages to free up space."
-            BASE_PACKAGES=$(echo "$BASE_PACKAGES" | sed 's/screen//g' | sed 's/sshpass//g' | sed 's/luci-app-ttyd//g')
+            BASE_PACKAGES=$(echo "$BASE_PACKAGES" | sed 's/screen//g; s/sshpass//g; s/luci-app-ttyd//g')
             
             if [[ " ${FINAL_EXTRA_PACKAGES} " =~ " luci-app-passwall2 " ]]; then
               echo "::notice::Prioritizing luci-app-passwall2. Removing other heavy packages."
@@ -424,7 +426,7 @@ jobs:
             
             if (( HEAVY_PKG_COUNT > 2 )); then
               echo "::warning::More than 2 heavy packages selected. Pruning luci-app-wol/smartdns."
-              FINAL_EXTRA_PACKAGES=$(echo "$FINAL_EXTRA_PACKAGES" | sed 's/luci-app-wol//g' | sed 's/luci-app-smartdns//g')
+              FINAL_EXTRA_PACKAGES=$(echo "$FINAL_EXTRA_PACKAGES" | sed 's/luci-app-wol//g; s/luci-app-smartdns//g')
             fi
           fi
           
