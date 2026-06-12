@@ -60,7 +60,7 @@ jobs:
       - name: 'Install Build Dependencies'
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp apk-tools || sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
         id: download_ib
@@ -272,7 +272,8 @@ jobs:
           download_xtemple_assets() {
             echo "--> Fetching custom themes and tools from PeDitXOS/xtemple..."
             local API_URL="https://api.github.com/repos/PeDitXOS/xtemple/releases/latest"
-            local API_RESPONSE=$(curl -sL "$API_URL")
+            # Added GITHUB_TOKEN to bypass GitHub API rate-limits securely
+            local API_RESPONSE=$(curl -sL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
             if ! echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
               echo "::warning::Could not fetch assets from PeDitXOS/xtemple repository."
               return 1
@@ -310,7 +311,8 @@ jobs:
             local PASSWALL_REPO_PATH="$1"
             echo "--> Attempting to download dependency bundle for ${PASSWALL_REPO_PATH}..."
             local API_URL="https://api.github.com/repos/${PASSWALL_REPO_PATH}/releases/latest"
-            local API_RESPONSE=$(curl -sL "$API_URL")
+            # Added GITHUB_TOKEN to bypass GitHub API rate-limits securely
+            local API_RESPONSE=$(curl -sL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
             if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
               # Download primary Passwall interface ipk/apk
               local PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | endswith($EXT)) | .browser_download_url' | head -n 1)
@@ -333,8 +335,8 @@ jobs:
             fi
           }
 
-          # Invoke xtemple download pipeline
-          download_xtemple_assets
+          # Invoke xtemple download pipeline safely without crashing the step on remote GitHub API failures
+          download_xtemple_assets || echo "Warning: Skipping non-fatal xtemple theme asset fetching issues"
 
           # Convert extra packages to lowercase to prevent mobile capitalization errors
           EXTRA_PKGS_LOWER=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
@@ -346,6 +348,19 @@ jobs:
               download_passwall_bundle "peditx/openwrt-passwall2"
             fi
           done
+
+          # Index downloaded APK packages if any exist to make them visible to the APK package manager and prevent packages.adb warnings
+          if [ "${{ env.IS_APK }}" = "true" ]; then
+            echo "--> Indexing local custom APK packages..."
+            cd "${CUSTOM_PKG_DIR}"
+            if ls *.apk &>/dev/null; then
+              apk index -o APKINDEX.tar.gz *.apk || echo "Warning: apk index generation failed"
+              touch packages.adb
+            else
+              touch packages.adb
+            fi
+            cd -
+          fi
     
       - name: 'Build Firmware Image'
         id: build_image
