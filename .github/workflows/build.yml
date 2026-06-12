@@ -92,7 +92,7 @@ jobs:
             sed -i 's/^option check_signature.*/option check_signature 0/' "$file"
           done
 
-          # Download and register the public custom key to all trusted key locations within ImageBuilder (Using fallback '|| echo' to bypass 404/server crashes)
+          # Download and register the public custom key to all trusted key locations within ImageBuilder
           find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
             echo "Adding custom signature key to: $dir"
             wget -qO "$dir/passwall.rsa.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Warning: Custom key download failed, proceeding without key registration inside ImageBuilder"
@@ -117,7 +117,6 @@ jobs:
               IS_APK=false
             fi
           else
-            # Support for snapshot master branches which utilize APK manager
             if [ "${{ github.event.inputs.openwrt_version }}" = "snapshot" ]; then
               IS_APK=true
             else
@@ -136,7 +135,6 @@ jobs:
           
           # --- Create Custom Repositories / Feeds ---
           if [ "$IS_APK" = "true" ]; then
-            # Generate APK repository feeds configuration aligning with repository.peditxos.ir layout
             CUSTOM_REPOS_DIR="${FILES_DIR}/etc/apk"
             mkdir -p "${CUSTOM_REPOS_DIR}"
             CUSTOM_REPOS_FILE="${CUSTOM_REPOS_DIR}/repositories"
@@ -152,7 +150,6 @@ jobs:
             echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
             echo "--- APK repositories config generated ---"
           else
-            # Generate legacy OPKG customfeeds configuration
             CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
             mkdir -p "${CUSTOM_FEEDS_DIR}"
             CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
@@ -211,7 +208,6 @@ jobs:
               sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
               sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
               
-              # Safely append dynamic APK repositories fallback if needed
               if ! grep -q "openwrt-passwall-build" /etc/apk/repositories 2>/dev/null; then
                 if [ -f /etc/openwrt_release ]; then
                   . /etc/openwrt_release
@@ -225,7 +221,6 @@ jobs:
                 fi
               fi
             fi
-            # Place signature keys properly into APK database with wget fallback
             mkdir -p /etc/apk/keys
             wget -qO /etc/apk/keys/passwall.rsa.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub > /dev/null 2>&1 || echo "Failed to download custom APK public key"
           fi
@@ -269,7 +264,6 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Dynamic package downloader that supports both .apk and .ipk dynamically (with wget non-blocking fallback)
           download_latest_pkg() {
             local REPO_PATH="$1"
             if [ -z "$REPO_PATH" ]; then return; fi
@@ -311,16 +305,20 @@ jobs:
             fi
           }
 
-          # Helper function for safe direct downloads
+          # Helper function for safe direct downloads (Public Repo - No Auth Required)
           download_direct_pkg() {
             local URL="$1"
             local FILENAME=$(basename "$URL")
-            echo "--> Downloading $FILENAME..."
-            # Using token for authentication in case the repository is private
-            curl -fL -H "Authorization: token ${{ secrets.GITHUB_PAT }}" -o "${CUSTOM_PKG_DIR}/$FILENAME" "$URL" || {
-              echo "::error::Failed to download $FILENAME. Ensure the URL is correct and PAT is valid."
+            echo "--> Downloading public package: $FILENAME..."
+            
+            # Removed Authorization header since PeDitXOS/xtemple is a public repository
+            # -f ensures curl fails silently on HTTP errors (like 404) instead of saving HTML error page
+            # -L follows redirects if raw.githubusercontent.com redirects
+            if ! curl -fL --retry 3 --retry-delay 2 -o "${CUSTOM_PKG_DIR}/$FILENAME" "$URL"; then
+              echo "::error::Failed to download $FILENAME from public repo. Check URL or network."
               exit 1
-            }
+            fi
+            echo "--> Successfully downloaded $FILENAME"
           }
 
           # Download Themes directly from the specified RAW links based on the package type (apk/ipk)
@@ -361,7 +359,6 @@ jobs:
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup"
           
-          # Convert all input packages to lowercase
           FINAL_EXTRA_PACKAGES=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
 
           APPLY_LOW_FLASH_RESTRICTIONS=false
@@ -418,8 +415,6 @@ jobs:
             fi
           fi
           
-          # Assemble the final list of all packages
-          # Explicitly exclude sing-box and hysteria to prevent them from slipping in and taking up space
           ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq dnsmasq-full ${FINAL_EXTRA_PACKAGES} -sing-box -hysteria"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
@@ -566,7 +561,6 @@ jobs:
             DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
           fi
           
-          # UPDATED URL to allow access despite Apache folder conflict
           curl -X POST "https://firmware.peditxos.ir/api/github-status" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_PAT }}" \
