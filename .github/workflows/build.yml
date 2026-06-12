@@ -62,14 +62,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
           
-          # Forcefully register the universe repository to guarantee package availability
           sudo add-apt-repository -y universe || true
           
-          # Attempt native installation of apk-tools, fallback to dynamic static binary on failure
           sudo apt-get install -y apk-tools || {
             echo "Native apk-tools failed, dynamically resolving official static compiled binary from Alpine..."
-            
-            # Try resolving from multiple stable Alpine releases (v3.20, v3.21, v3.19) using browser User-Agent
             for version in "v3.20" "v3.21" "v3.19" "edge"; do
               echo "Checking Alpine ${version} repository..."
               HTML=$(curl -sL -A "Mozilla/5.0" "https://dl-cdn.alpinelinux.org/alpine/${version}/main/x86_64/")
@@ -88,15 +84,12 @@ jobs:
             
             echo "Downloading static apk-tools from: $APK_URL"
             wget -qO /tmp/apk-static.apk "$APK_URL"
-            
-            # Extract safely using tar -xf (which handles both gzip and zstd automatically)
             tar -xf /tmp/apk-static.apk -C /tmp sbin/apk.static
             sudo mv /tmp/sbin/apk.static /usr/bin/apk
             sudo chmod +x /usr/bin/apk
             rm -f /tmp/apk-static.apk
           }
           
-          # Validate package management tool binary registration
           apk --version || echo "Warning: local apk tool configuration finished with warnings"
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
@@ -121,7 +114,6 @@ jobs:
           TARGET_ARCH="${{ github.event.inputs.target_arch }}"
           echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
           
-          # Proxy all potential internal ImageBuilder source files to our custom repository server with correct path prefix (/openwrt)
           find "${IMAGEBUILDER_DIR}" -type f \( -name "repositories.conf" -o -name "repositories" -o -name "apk.conf" \) 2>/dev/null | while read -r file; do
             echo "Adjusting sources in: $file"
             sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' "$file"
@@ -129,7 +121,6 @@ jobs:
             sed -i 's/^option check_signature.*/option check_signature 0/' "$file"
           done
 
-          # Download and register the public custom key to all trusted key locations within ImageBuilder (Using fallback '|| echo' to bypass 404/server crashes)
           wget -qO /tmp/passwall.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Warning: Custom key download failed"
           if [ -f /tmp/passwall.pub ]; then
             find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
@@ -137,7 +128,6 @@ jobs:
               cp /tmp/passwall.pub "$dir/passwall.rsa.pub"
               cp /tmp/passwall.pub "$dir/passwall.pub"
             done
-            # Keep host local build environment trusted as well
             mkdir -p "${IMAGEBUILDER_DIR}/etc/apk/keys"
             cp /tmp/passwall.pub "${IMAGEBUILDER_DIR}/etc/apk/keys/passwall.rsa.pub"
           fi
@@ -149,38 +139,25 @@ jobs:
           FILES_DIR="${{ github.workspace }}/files"
           mkdir -p "${FILES_DIR}/etc"
           
-          OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
-          TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
-          VERSION_MAJOR=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1)
+          IMAGEBUILDER_DIR="${{ github.workspace }}/imagebuilder"
           
-          # Fixed evaluation logic: Systems utilizing modern APK engine are exclusively OpenWrt 25+ or snapshots
-          if [ "$VERSION_MAJOR" -eq "$VERSION_MAJOR" ] 2>/dev/null; then
-            if [ "$VERSION_MAJOR" -ge 25 ]; then
-              IS_APK=true
-            else
-              IS_APK=false
-            fi
-          else
-            # Support for master snapshots branches which natively enforce APK core configurations
-            if [ "${{ github.event.inputs.openwrt_version }}" = "snapshot" ]; then
-              IS_APK=true
-            else
-              IS_APK=false
-            fi
-          fi
-          
-          if [ "$IS_APK" = "true" ]; then
+          if [ -f "${IMAGEBUILDER_DIR}/apk.conf" ] || [ -d "${IMAGEBUILDER_DIR}/etc/apk" ] || grep -q -E "apk|APK" "${IMAGEBUILDER_DIR}/Makefile" 2>/dev/null; then
+            IS_APK=true
             PKG_EXT="apk"
+            echo "::notice::Detected APK package manager inside ImageBuilder"
           else
+            IS_APK=false
             PKG_EXT="ipk"
+            echo "::notice::Detected OPKG package manager inside ImageBuilder"
           fi
           
           echo "IS_APK=${IS_APK}" >> $GITHUB_ENV
           echo "PKG_EXT=${PKG_EXT}" >> $GITHUB_ENV
           
-          # --- Create Custom Repositories / Feeds ---
+          OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
+          TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
+          
           if [ "$IS_APK" = "true" ]; then
-            # Generate APK repository feeds configuration using '%a' to prevent duplicate architecture path appending by the APK manager
             CUSTOM_REPOS_DIR="${FILES_DIR}/etc/apk"
             mkdir -p "${CUSTOM_REPOS_DIR}"
             CUSTOM_REPOS_FILE="${CUSTOM_REPOS_DIR}/repositories"
@@ -196,7 +173,6 @@ jobs:
             echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
             echo "--- APK repositories config generated ---"
           else
-            # Generate legacy OPKG customfeeds configuration
             CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
             mkdir -p "${CUSTOM_FEEDS_DIR}"
             CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
@@ -209,7 +185,6 @@ jobs:
             echo "--- Custom OPKG feeds generated ---"
           fi
 
-          # --- Branding Strategy ---
           cat << EOF > "${FILES_DIR}/etc/os-release"
           NAME='PeDitXOS'
           VERSION='${{ github.event.inputs.openwrt_version }}'
@@ -227,35 +202,26 @@ jobs:
           EOF
           echo "--- os-release file generated ---"
 
-          # --- Create UCI Defaults Script with engine-adaptive fallback logic ---
           UCI_SCRIPT_DIR="${FILES_DIR}/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
-          
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
           cat << 'EOF_SCRIPT' >> "${UCI_SCRIPT_PATH}"
-          # 1. Handle Legacy OPKG environment if detected
           if [ -d /etc/opkg ]; then
-            if [ -f /etc/opkg.conf ]; then
-              sed -i 's/option check_signature/# option check_signature/g' /etc/opkg.conf
-            fi
+            [ -f /etc/opkg.conf ] && sed -i 's/option check_signature/# option check_signature/g' /etc/opkg.conf
             if [ -f /etc/opkg/distfeeds.conf ]; then
               sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/opkg/distfeeds.conf
               sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/opkg/distfeeds.conf
             fi
-            wget -qO /tmp/passwall.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Failed to download custom OPKG public key"
-            opkg-key add /tmp/passwall.pub > /dev/null 2>&1 || echo "Failed to register custom OPKG key"
+            wget -qO /tmp/passwall.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || true
+            opkg-key add /tmp/passwall.pub > /dev/null 2>&1 || true
             rm -f /tmp/passwall.pub
           fi
-
-          # 2. Handle Modern APK (OpenWrt 25+) environment if detected
           if [ -d /etc/apk ]; then
             if [ -f /etc/apk/repositories ]; then
               sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
               sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
-              
-              # Safely append dynamic APK repositories fallback if needed
               if ! grep -q "openwrt-passwall-build" /etc/apk/repositories 2>/dev/null; then
                 if [ -f /etc/openwrt_release ]; then
                   . /etc/openwrt_release
@@ -269,13 +235,11 @@ jobs:
                 fi
               fi
             fi
-            # Place signature keys properly into APK database with wget fallback
             mkdir -p /etc/apk/keys
-            wget -qO /etc/apk/keys/passwall.rsa.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub > /dev/null 2>&1 || echo "Failed to download custom APK public key"
+            wget -qO /etc/apk/keys/passwall.rsa.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub > /dev/null 2>&1 || true
           fi
           EOF_SCRIPT
 
-          # UCI settings
           THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
@@ -285,28 +249,14 @@ jobs:
           echo "set system.@system[0].ntpserver='ir.pool.ntp.org time.cloudflare.com'" >> "${UCI_SCRIPT_PATH}"
           echo "set network.wan.dns='8.8.8.8 8.8.4.4'" >> "${UCI_SCRIPT_PATH}"
           echo "set luci.main.mediaurlbase='/luci-static/${THEME_NAME}'" >> "${UCI_SCRIPT_PATH}"
-
-          if [ -n "${{ github.event.inputs.lan_ip }}" ]; then
-            echo "set network.lan.ipaddr='${{ github.event.inputs.lan_ip }}'" >> "${UCI_SCRIPT_PATH}"
-            echo "set dhcp.lan.start='100'" >> "${UCI_SCRIPT_PATH}"
-            echo "set dhcp.lan.limit='150'" >> "${UCI_SCRIPT_PATH}"
-            echo "set dhcp.lan.interface='lan'" >> "${UCI_SCRIPT_PATH}"
-          fi
-          
-          if [ "${{ github.event.inputs.wifi_24_enabled }}" = "false" ]; then
-            echo "set wireless.radio0.disabled='1'" >> "${UCI_SCRIPT_PATH}"
-          else
-            echo "set wireless.radio0.disabled='0'" >> "${UCI_SCRIPT_PATH}"
-          fi
-
+          [ -n "${{ github.event.inputs.lan_ip }}" ] && echo "set network.lan.ipaddr='${{ github.event.inputs.lan_ip }}'" >> "${UCI_SCRIPT_PATH}" && echo "set dhcp.lan.start='100'" >> "${UCI_SCRIPT_PATH}" && echo "set dhcp.lan.limit='150'" >> "${UCI_SCRIPT_PATH}" && echo "set dhcp.lan.interface='lan'" >> "${UCI_SCRIPT_PATH}"
+          if [ "${{ github.event.inputs.wifi_24_enabled }}" = "false" ]; then echo "set wireless.radio0.disabled='1'" >> "${UCI_SCRIPT_PATH}"; else echo "set wireless.radio0.disabled='0'" >> "${UCI_SCRIPT_PATH}"; fi
           echo "commit" >> "${UCI_SCRIPT_PATH}"
           echo "EOF" >> "${UCI_SCRIPT_PATH}"
           echo "rm -rf /tmp/luci-cache/*" >> "${UCI_SCRIPT_PATH}"
           echo "service uhttpd restart" >> "${UCI_SCRIPT_PATH}"
           echo "/sbin/reload_config" >> "${UCI_SCRIPT_PATH}"
-          
           chmod +x "${UCI_SCRIPT_PATH}"
-          echo "--- Custom UCI script generated ---"
 
       - name: 'Download Custom Packages'
         env:
@@ -315,7 +265,7 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Universal downloader using /releases/latest with APK->IPK fallback from individual repos
+          # Only download custom themes from GitHub releases/latest
           download_latest_pkg() {
             local REPO="$1"
             local SEARCH_PATTERN="$2"
@@ -332,24 +282,20 @@ jobs:
             
             local URL=""
             if [ -n "$ARCH_PATTERN" ]; then
-              # Match name containing both SEARCH_PATTERN and ARCH_PATTERN, and also matching the package type (apk/ipk)
-              URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg ARCH "${ARCH_PATTERN}" --arg EXT "${{ env.PKG_EXT }}" \
+              URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg ARCH "${ARCH_PATTERN}" --arg EXT "${PKG_EXT}" \
                 '.assets[] | select(.name | contains($PAT) and contains($ARCH) and (contains("-" + $EXT) or endswith("." + $EXT))) | .browser_download_url' | head -n 1)
               
-              # Fallback if no specific extension/type match is found
               if [ -z "$URL" ] || [ "$URL" == "null" ]; then
                 echo "::warning::Strict package type match failed, trying general match..."
                 URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg ARCH "${ARCH_PATTERN}" \
                   '.assets[] | select(.name | contains($PAT) and contains($ARCH)) | .browser_download_url' | head -n 1)
               fi
             else
-              # Architecture independent matching (like themes)
-              URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg EXT ".${{ env.PKG_EXT }}" \
+              URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" --arg EXT ".${PKG_EXT}" \
                 '.assets[] | select(.name | contains($PAT) and endswith($EXT)) | .browser_download_url' | head -n 1)
               
-              # Fallback to .ipk if .apk is not found for architecture-independent packages
               if [ -z "$URL" ] || [ "$URL" == "null" ]; then
-                if [ "${{ env.PKG_EXT }}" == "apk" ]; then
+                if [ "$PKG_EXT" = "apk" ]; then
                   echo "::warning::No .apk found for ${SEARCH_PATTERN}, falling back to .ipk..."
                   URL=$(echo "$RESPONSE" | jq -r --arg PAT "${SEARCH_PATTERN}" \
                     '.assets[] | select(.name | contains($PAT) and endswith(".ipk")) | .browser_download_url' | head -n 1)
@@ -365,69 +311,40 @@ jobs:
             fi
           }
 
-          # Download Themes (Architecture Independent) from their new individual repositories
+          # Download ONLY custom themes from GitHub
           download_latest_pkg "PeDitXOS/luci-theme-peditx" "luci-theme-peditx"
           download_latest_pkg "PeDitXOS/luci-theme-carbonPX" "luci-theme-carbonpx"
 
-          # Download ThemeSwitch (Architecture Specific) from its new individual repository
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
-            download_latest_pkg "PeDitXOS/luci-app-themeswitch" "luci-app-themeswitch" "${{ env.TARGET_ARCH }}"
+            download_latest_pkg "PeDitXOS/luci-app-themeswitch" "luci-app-themeswitch" "$TARGET_ARCH"
           fi
           
-          # Custom passwall downloader utilizing reliable explicit repository mappings
-          download_passwall_bundle() {
-            local PASSWALL_REPO_PATH="$1"
-            echo "--> Attempting to download dependency bundle for ${PASSWALL_REPO_PATH}..."
-            local API_URL="https://api.github.com/repos/${PASSWALL_REPO_PATH}/releases/latest"
-            local API_RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
-            if echo "${API_RESPONSE}" | jq -e '.assets' > /dev/null; then
-              # Download primary Passwall interface ipk/apk
-              local PKG_URL=$(echo "${API_RESPONSE}" | jq -r --arg EXT ".${{ env.PKG_EXT }}" '.assets[] | select(.name | endswith($EXT)) | .browser_download_url' | head -n 1)
-              if [ -z "$PKG_URL" ] || [ "$PKG_URL" = "null" ]; then
-                if [ "${{ env.PKG_EXT }}" == "apk" ]; then
-                  PKG_URL=$(echo "${API_RESPONSE}" | jq -r '.assets[] | select(.name | endswith(".ipk")) | .browser_download_url' | head -n 1)
-                fi
-              fi
-              if [ -n "$PKG_URL" ] && [ "$PKG_URL" != "null" ]; then
-                wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}" || echo "Warning: Failed downloading passwall package"
-              fi
-              # Download architecture dependency bundles zip (supports both custom prefix and standard bundle signatures)
-              local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg ARCH "${{ env.TARGET_ARCH }}" --arg EXT "${{ env.PKG_EXT }}" '.assets[] | select(.name | contains("passwall_packages") and contains($EXT) and contains($ARCH) and endswith("zip")) | .browser_download_url' | head -n 1)
-              if [ -z "$ZIP_URL" ] || [ "$ZIP_URL" = "null" ]; then
-                ZIP_URL=$(echo "${API_RESPONSE}" | jq -r --arg ARCH "${{ env.TARGET_ARCH }}" '.assets[] | select(.name | contains("passwall_packages") and contains($ARCH) and endswith("zip")) | .browser_download_url' | head -n 1)
-              fi
-              if [ -n "$ZIP_URL" ] && [ "$ZIP_URL" != "null" ]; then
-                wget -q "${ZIP_URL}" -O deps.zip || echo "Warning: Failed downloading passwall zip bundle"
-                unzip -qo deps.zip -d "${CUSTOM_PKG_DIR}" || echo "Warning: Extraction failed"
-                rm -f deps.zip
-                echo "--> Successfully downloaded dependency bundle for ${PASSWALL_REPO_PATH}"
+          # NOTE: Passwall packages are NOT downloaded here.
+          # They will be installed from official OpenWrt repositories (proxied via repository.peditxos.ir)
+          # during the 'make image' step via PACKAGES variable.
+          echo "::notice::Passwall packages will be fetched from official repositories during build phase."
+
+          # Initialize APK index database for local custom packages (themes only)
+          if [ "$IS_APK" = "true" ]; then
+            echo "--> Initializing APK package index database for custom packages..."
+            cd "${CUSTOM_PKG_DIR}"
+            
+            if [ ! -f "packages.adb" ]; then
+              touch packages.adb
+            fi
+            
+            if ls *.apk &>/dev/null; then
+              echo "Indexing $(ls *.apk | wc -l) custom APK packages..."
+              apk index -o APKINDEX.tar.gz *.apk 2>/dev/null || echo "Warning: APKINDEX.tar.gz generation had issues"
+              apk index -o packages.adb *.apk 2>/dev/null || echo "Warning: packages.adb generation had issues"
+              
+              if [ -f "packages.adb" ] && [ -s "packages.adb" ]; then
+                echo "--> APK index successfully created ($(stat -c%s packages.adb) bytes)"
               else
-                echo "::warning::Could not find dependency bundle for ${PASSWALL_REPO_PATH}."
+                echo "::warning::APK index file is empty or missing, local packages may not be visible"
               fi
             else
-                echo "::warning::Could not find a valid release for ${PASSWALL_REPO_PATH}."
-            fi
-          }
-
-          # Handle Passwall Bundles safely
-          EXTRA_PKGS_LOWER=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
-          for pkg in $EXTRA_PKGS_LOWER; do
-            if [[ "$pkg" == "luci-app-passwall" ]]; then
-              download_passwall_bundle "peditx/openwrt-passwall"
-            fi
-            if [[ "$pkg" == "luci-app-passwall2" ]]; then
-              download_passwall_bundle "peditx/openwrt-passwall2"
-            fi
-          done
-
-          # Index downloaded APK packages if any exist to make them visible to the APK package manager during build
-          if [ "${{ env.IS_APK }}" = "true" ]; then
-            echo "--> Indexing local custom APK packages..."
-            cd "${CUSTOM_PKG_DIR}"
-            if ls *.apk &>/dev/null; then
-              # Index both official and newly downloaded APKs directly into dual packages.adb and APKINDEX.tar.gz structures
-              apk index -o APKINDEX.tar.gz *.apk || echo "Warning: APKINDEX generation failed"
-              apk index -o packages.adb *.apk || echo "Warning: packages.adb generation failed"
+              echo "::notice::No custom APK files found to index"
             fi
             cd -
           fi
@@ -437,11 +354,8 @@ jobs:
         run: |
           cd "${{ env.IMAGEBUILDER_DIR }}"
           
-          # --- Smart Package Selection Logic ---
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup"
-          
-          # Convert all input packages to lowercase
           FINAL_EXTRA_PACKAGES=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
 
           APPLY_LOW_FLASH_RESTRICTIONS=false
@@ -452,65 +366,41 @@ jobs:
 
           case "${{ github.event.inputs.device_profile }}" in
             *archer-a7-v5|*archer-c7-v5|*tl-wdr4300*|*tl-wr1043nd*|*wrt160nl*|*dir-860l-b1*)
-              APPLY_LOW_FLASH_RESTRICTIONS=true
-              echo "::notice::Device with limited flash detected. Applying restrictions."
-              ;;
+              APPLY_LOW_FLASH_RESTRICTIONS=true ;;
           esac
 
           IS_NON_X86_SBC=false
           case "${{ github.event.inputs.device_profile }}" in
-            *nanopi*|*bananapi*|*orangepi*|*rpi*)
-              IS_NON_X86_SBC=true
-              ;;
+            *nanopi*|*bananapi*|*orangepi*|*rpi*) IS_NON_X86_SBC=true ;;
           esac
 
           if [[ "$APPLY_LOW_FLASH_RESTRICTIONS" == "true" ]]; then
             THEME_PACKAGES=""
-            echo "::notice::Removing non-essential base packages to free up space."
             BASE_PACKAGES=$(echo "$BASE_PACKAGES" | sed 's/screen//g; s/sshpass//g; s/luci-app-ttyd//g')
-            
             if [[ " ${FINAL_EXTRA_PACKAGES} " =~ " luci-app-passwall2 " ]]; then
-              echo "::notice::Prioritizing luci-app-passwall2. Removing other heavy packages."
               KEPT_PACKAGES=""
               for pkg in ${FINAL_EXTRA_PACKAGES}; do
-                case "$pkg" in
-                  luci-app-passwall|luci-app-wol|luci-app-smartdns)
-                    ;;
-                  *)
-                    KEPT_PACKAGES="${KEPT_PACKAGES} ${pkg}"
-                    ;;
-                esac
+                case "$pkg" in luci-app-passwall|luci-app-wol|luci-app-smartdns) ;; *) KEPT_PACKAGES="${KEPT_PACKAGES} ${pkg}" ;; esac
               done
               FINAL_EXTRA_PACKAGES=$(echo "${KEPT_PACKAGES}" | xargs)
             fi
-
           elif [[ "$IS_NON_X86_SBC" == "true" ]]; then
             HEAVY_PKG_COUNT=0
             for pkg in luci-app-passwall luci-app-passwall2 luci-app-wol luci-app-smartdns; do
-              if [[ " ${FINAL_EXTRA_PACKAGES} " =~ " ${pkg} " ]]; then
-                HEAVY_PKG_COUNT=$((HEAVY_PKG_COUNT + 1))
-              fi
+              [[ " ${FINAL_EXTRA_PACKAGES} " =~ " ${pkg} " ]] && HEAVY_PKG_COUNT=$((HEAVY_PKG_COUNT + 1))
             done
-            
-            if (( HEAVY_PKG_COUNT > 2 )); then
-              echo "::warning::More than 2 heavy packages selected. Pruning luci-app-wol/smartdns."
-              FINAL_EXTRA_PACKAGES=$(echo "$FINAL_EXTRA_PACKAGES" | sed 's/luci-app-wol//g; s/luci-app-smartdns//g')
-            fi
+            (( HEAVY_PKG_COUNT > 2 )) && FINAL_EXTRA_PACKAGES=$(echo "$FINAL_EXTRA_PACKAGES" | sed 's/luci-app-wol//g; s/luci-app-smartdns//g')
           fi
           
-          # Assemble the final list of all packages
-          # Explicitly exclude sing-box and hysteria to prevent them from slipping in and taking up space
+          # Passwall packages are included here and will be fetched from official repos
           ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq dnsmasq-full ${FINAL_EXTRA_PACKAGES} -sing-box -hysteria"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
           echo "Final Packages: ${ALL_PACKAGES}"
           
           if [[ "${{ github.event.inputs.device_target }}" == "x86/64" || "${{ github.event.inputs.device_target }}" == "x86/generic" || "$IS_NON_X86_SBC" == "true" ]]; then
-            echo "x86 or SBC target. Forcing RootFS to 512MB."
             sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
             echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
-          else
-            echo "Using default RootFS size for the profile."
           fi
           
           make image PROFILE="${{ github.event.inputs.device_profile }}" \
@@ -527,77 +417,21 @@ jobs:
 
       - name: 'List Output Directory Contents'
         if: always()
-        run: |
-          echo "--- Listing contents of output directory ---"
-          ls -R ${{ github.workspace }}/output 2>/dev/null || echo "Output directory not created yet due to build stage interruption"
+        run: ls -R ${{ github.workspace }}/output 2>/dev/null || echo "No output yet"
 
       - name: 'Organize, Rename, and Compress Files'
         id: organize_files
         run: |
           cd "${{ github.workspace }}/output"
-          if [ -z "$(ls -A .)" ]; then 
-            echo "::error::Build failed, no files were generated."
-            exit 1
-          fi
+          [ -z "$(ls -A .)" ] && echo "::error::Build failed, no files generated." && exit 1
           
-          PRIMARY_IMAGE=""
-          if [[ -n $(find . -name "*sysupgrade.itb*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sysupgrade.itb*" | head -n 1)
-          elif [[ -n $(find . -name "*sysupgrade.bin*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sysupgrade.bin*" | head -n 1)
-          elif [[ -n $(find . -name "*sysupgrade.img*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sysupgrade.img*" | head -n 1)
-          elif [[ -n $(find . -name "*sysupgrade.img.gz*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sysupgrade.img.gz*" | head -n 1)
-          elif [[ -n $(find . -name "*squashfs-sysupgrade.bin*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*squashfs-sysupgrade.bin*" | head -n 1)
-          elif [[ -n $(find . -name "*ext4-sysupgrade.img.gz*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*ext4-sysupgrade.img.gz*" | head -n 1)
-          elif [[ -n $(find . -name "*nand-sysupgrade.bin*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*nand-sysupgrade.bin*" | head -n 1)
-          elif [[ -n $(find . -name "*ubi-sysupgrade.img*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*ubi-sysupgrade.img*" | head -n 1)
-          elif [[ -n $(find . -name "*trx*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*trx*" | head -n 1)
-          elif [[ -n $(find . -name "*chk*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*chk*" | head -n 1)
-          elif [[ -n $(find . -name "*tar*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*tar*" | head -n 1)
-          elif [[ -n $(find . -name "*ubi*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*ubi*" | head -n 1)
-          elif [[ -n $(find . -name "*ubifs*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*ubifs*" | head -n 1)
-          elif [[ -n $(find . -name "*ext4*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*ext4*" | head -n 1)
-          elif [[ -n $(find . -name "*sdcard.img.gz*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sdcard.img.gz*" | head -n 1)
-          elif [[ -n $(find . -name "*sdcard.img.xz*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sdcard.img.xz*" | head -n 1)
-          elif [[ -n $(find . -name "*factory.bin*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*factory.bin*" | head -n 1)
-          elif [[ -n $(find . -name "*factory.img*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*factory.img*" | head -n 1)
-          elif [[ -n $(find . -name "*sdimg*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*sdimg*" | head -n 1)
-          elif [[ -n $(find . -name "*wic*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*wic*" | head -n 1)
-          elif [[ -n $(find . -name "*vdi*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*vdi*" | head -n 1)
-          elif [[ -n $(find . -name "*vmdk*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*vmdk*" | head -n 1)
-          elif [[ -n $(find . -name "*qcow2*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*qcow2*" | head -n 1)
-          elif [[ -n $(find . -name "*vhdx*" | head -n 1) ]]; then
-            PRIMARY_IMAGE=$(find . -name "*vhdx*" | head -n 1)
-          fi
-
-          if [ -z "$PRIMARY_IMAGE" ]; then
-            echo "::error::No primary flashable image found!"
-            exit 1
-          fi
+          PRIMARY_IMAGE=$(find . -type f \( -name "*sysupgrade*" -o -name "*factory*" -o -name "*sdcard*" -o -name "*ext4*" -o -name "*squashfs*" -o -name "*ubi*" -o -name "*trx*" -o -name "*chk*" -o -name "*vmdk*" -o -name "*qcow2*" \) ! -name "*.sha256" ! -name "*.manifest" | head -n 1)
+          
+          [ -z "$PRIMARY_IMAGE" ] && echo "::error::No primary flashable image found!" && exit 1
           echo "Primary image found: ${PRIMARY_IMAGE}"
-          for f in openwrt-*; do mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
-          rm -f *.json
+          
+          for f in openwrt-*; do [ -e "$f" ] && mv -- "$f" "PeDitXOS-${f#openwrt-}"; done
+          rm -f *.json *.sha256 *.manifest
 
           TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
           ARCHIVE_NAME="PeDitXOS-${{ github.event.inputs.device_profile }}-${TIMESTAMP}.zip"
@@ -612,46 +446,32 @@ jobs:
           SF_PROJECT_NAME: ${{ secrets.SF_PROJECT_NAME }}
         run: |
           mkdir -p ~/.ssh
-          echo "${SSH_PRIVATE_KEY}" > ~/.rsa
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
           
-          REMOTE_BASE_DIR="/home/frs/project/${SF_PROJECT_NAME}/users"
-          REMOTE_UPLOAD_DIR="${REMOTE_BASE_DIR}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
-          LOCAL_FILE_PATH="${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
+          REMOTE_UPLOAD_DIR="/home/frs/project/${SF_PROJECT_NAME}/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
+          LOCAL_FILE="${{ github.workspace }}/output/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
 
-          echo "Connecting to sftp://frs.sourceforge.net as user ${SF_USERNAME}"
-          echo "Remote directory to create: ${REMOTE_UPLOAD_DIR}"
-          echo "Local file to upload: ${LOCAL_FILE_PATH}"
-          
           lftp -c "
           set sftp:connect-program 'ssh -a -x -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes';
           open -u ${SF_USERNAME}, sftp://frs.sourceforge.net;
           mkdir -p ${REMOTE_UPLOAD_DIR};
           cd ${REMOTE_UPLOAD_DIR};
-          put ${LOCAL_FILE_PATH};
+          put ${LOCAL_FILE};
           bye;
           "
           rm -f ~/.ssh/id_rsa
-          echo "Upload complete."
 
       - name: 'Report Result to PeDitXOS Backend'
         if: always()
         run: |
           STATUS="failed"
-          if [ "${{ job.status }}" == "success" ]; then STATUS="completed"; fi
+          [ "${{ job.status }}" == "success" ] && STATUS="completed"
           DOWNLOAD_URL=""
-          if [ "$STATUS" == "completed" ]; then
-            DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
-          fi
+          [ "$STATUS" == "completed" ] && DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
           
-          # Clean payload mapping avoiding trailing character mutations on PostgreSQL instances
           curl -X POST "https://firmware.peditxos.ir/api/github-status" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_PAT }}" \
-            -d "{
-              \"build_id\": \"${{ github.event.inputs.build_id }}\",
-              \"status\": \"$STATUS\",
-              \"download_url\": \"$DOWNLOAD_URL\"
-            }"
+            -d "{\"build_id\": \"${{ github.event.inputs.build_id }}\", \"status\": \"$STATUS\", \"download_url\": \"$DOWNLOAD_URL\"}"
