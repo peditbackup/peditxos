@@ -65,30 +65,43 @@ jobs:
           # Forcefully register the universe repository to guarantee package availability
           sudo add-apt-repository -y universe || true
           
-          # CRITICAL FIX: Disable AppArmor restriction on unprivileged user namespaces in Ubuntu 24.04 (Noble).
-          # This completely prevents 'IO ERROR' or sandbox-related failures when running apk-tools.
-          echo "Disabling AppArmor unprivileged user namespace restriction..."
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns || true
+          # Determine if we need alpine apk-tools based on target major version input
+          VERSION_INPUT="${{ github.event.inputs.openwrt_version }}"
+          VERSION_MAJOR=$(echo "$VERSION_INPUT" | cut -d. -f1)
+          
+          NEED_APK=false
+          if [[ "$VERSION_MAJOR" =~ ^[0-9]+$ ]] && [ "$VERSION_MAJOR" -ge 25 ]; then
+            NEED_APK=true
+          elif [[ "$VERSION_INPUT" == *"snapshot"* || "$VERSION_INPUT" == *"master"* ]]; then
+            NEED_APK=true
           fi
           
-          # Download official stable static apk-tools v2 (2.14.x) from Alpine v3.20 to avoid apt-get Noble failure.
-          echo "Resolving official static compiled apk-tools v2 from Alpine v3.20..."
-          HTML=$(curl -sL -A "Mozilla/5.0" "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/")
-          APK_FILENAME=$(echo "$HTML" | grep -oE 'apk-tools-static-[0-9.]+-r[0-9]+\.apk' | head -n 1)
-          if [ -n "$APK_FILENAME" ]; then
-            APK_URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/${APK_FILENAME}"
-            echo "Found static APK package: ${APK_FILENAME}"
-            wget -qO /tmp/apk-static.apk "$APK_URL"
-            tar -xf /tmp/apk-static.apk -C /tmp sbin/apk.static
-            sudo mv /tmp/sbin/apk.static /usr/local/bin/apk
-            sudo chmod +x /usr/local/bin/apk
-            rm -f /tmp/apk-static.apk
-            /usr/local/bin/apk --version
+          # Setup non-sandboxed apk wrapper only if target version actually uses APK packages
+          if [ "$NEED_APK" = "true" ]; then
+            echo "Resolving official static compiled apk-tools v2 from Alpine v3.20..."
+            HTML=$(curl -sL -A "Mozilla/5.0" "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/")
+            APK_FILENAME=$(echo "$HTML" | grep -oE 'apk-tools-static-[0-9.]+-r[0-9]+\.apk' | head -n 1)
+            if [ -n "$APK_FILENAME" ]; then
+              APK_URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/${APK_FILENAME}"
+              echo "Found static APK package: ${APK_FILENAME}"
+              wget -qO /tmp/apk-static.apk "$APK_URL"
+              tar -xf /tmp/apk-static.apk -C /tmp sbin/apk.static
+              sudo mv /tmp/sbin/apk.static /usr/local/bin/apk-real
+              sudo chmod +x /usr/local/bin/apk-real
+              rm -f /tmp/apk-static.apk
+              
+              sudo tee /usr/local/bin/apk << 'EOF'
+              #!/bin/sh
+              exec /usr/local/bin/apk-real --no-sandbox "$@"
+              EOF
+              sudo chmod +x /usr/local/bin/apk
+              /usr/local/bin/apk --version
+            else
+              echo "::error::Could not resolve apk-tools-static dynamically"
+              exit 1
+            fi
           else
-            echo "::error::Could not resolve apk-tools-static dynamically"
-            exit 1
+            echo "OPKG-based build detected. Skipping Alpine apk-tools setup on host runner."
           fi
 
       - name: 'Download and Extract OpenWrt ImageBuilder'
@@ -106,6 +119,31 @@ jobs:
           mkdir imagebuilder
           tar -xf "${IMAGEBUILDER_FILENAME}" --strip-components=1 -C imagebuilder
 
+      - name: 'Detect Package Manager'
+        id: detect_pkg
+        run: |
+          VERSION_INPUT="${{ github.event.inputs.openwrt_version }}"
+          VERSION_MAJOR=$(echo "$VERSION_INPUT" | cut -d. -f1)
+          
+          IS_APK=false
+          PKG_EXT="ipk"
+          
+          # Match OpenWrt 25.x+ versions as APK, others fall back to OPKG/IPK
+          if [[ "$VERSION_MAJOR" =~ ^[0-9]+$ ]] && [ "$VERSION_MAJOR" -ge 25 ]; then
+            IS_APK=true
+            PKG_EXT="apk"
+          elif [[ "$VERSION_INPUT" == *"snapshot"* || "$VERSION_INPUT" == *"master"* ]]; then
+            IS_APK=true
+            PKG_EXT="apk"
+          elif [ -f "imagebuilder/apk.conf" ] || [ -d "imagebuilder/etc/apk" ]; then
+            IS_APK=true
+            PKG_EXT="apk"
+          fi
+          
+          echo "IS_APK=${IS_APK}" >> $GITHUB_ENV
+          echo "PKG_EXT=${PKG_EXT}" >> $GITHUB_ENV
+          echo "::notice::Detected Package Manager: $([ "$IS_APK" = "true" ] && echo "APK" || echo "OPKG (IPK)")"
+
       - name: 'Prepare ImageBuilder Environment'
         run: |
           IMAGEBUILDER_DIR="imagebuilder"
@@ -113,12 +151,12 @@ jobs:
           TARGET_ARCH="${{ github.event.inputs.target_arch }}"
           echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
           
-          # Disable signature checking inside the compilation environment for safe local packages indexing
+          # Disable signature checking inside the compilation environment
           find "${IMAGEBUILDER_DIR}" -type f \( -name "repositories.conf" -o -name "repositories" -o -name "apk.conf" \) 2>/dev/null | while read -r file; do
             sed -i 's/^option check_signature.*/option check_signature 0/' "$file" 2>/dev/null || true
           done
 
-          # Download and register the public custom key to all trusted key locations within ImageBuilder
+          # Download and register the public custom key to all trusted key locations
           wget -qO /tmp/passwall.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Warning: Custom key download failed"
           if [ -f /tmp/passwall.pub ]; then
             find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
@@ -131,28 +169,24 @@ jobs:
             cp /tmp/passwall.pub "${IMAGEBUILDER_DIR}/etc/apk/keys/passwall.rsa.pub"
           fi
           
-          echo "--- Local keys successfully registered ---"
+          # Replace built-in staging_dir host compiler apk only if the target builds on APK manager
+          if [ "${{ env.IS_APK }}" = "true" ]; then
+            echo "Replacing staging_dir host apk binaries with custom wrapper..."
+            find "${IMAGEBUILDER_DIR}/staging_dir" -type f -name "apk" -executable 2>/dev/null | while read -r f; do
+              cp /usr/local/bin/apk "$f"
+              chmod +x "$f"
+            done
+          fi
+          
+          echo "--- ImageBuilder configurations successfully initialized ---"
 
       - name: 'Prepare Custom Files and Scripts'
         run: |
           FILES_DIR="${{ github.workspace }}/files"
           mkdir -p "${FILES_DIR}/etc"
           
-          IMAGEBUILDER_DIR="${{ github.workspace }}/imagebuilder"
-          
-          # Dynamically detect package manager directly from the extracted ImageBuilder configurations
-          if [ -f "${IMAGEBUILDER_DIR}/apk.conf" ] || [ -d "${IMAGEBUILDER_DIR}/etc/apk" ] || grep -q -E "apk|APK" "${IMAGEBUILDER_DIR}/Makefile" 2>/dev/null; then
-            IS_APK=true
-            PKG_EXT="apk"
-            echo "::notice::Detected APK package manager inside ImageBuilder"
-          else
-            IS_APK=false
-            PKG_EXT="ipk"
-            echo "::notice::Detected OPKG package manager inside ImageBuilder"
-          fi
-          
-          echo "IS_APK=${IS_APK}" >> $GITHUB_ENV
-          echo "PKG_EXT=${PKG_EXT}" >> $GITHUB_ENV
+          IS_APK="${{ env.IS_APK }}"
+          PKG_EXT="${{ env.PKG_EXT }}"
           
           OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
           TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
@@ -173,7 +207,6 @@ jobs:
             echo "$BASE_URL/passwall_luci" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall_packages" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
-            echo "--- Target APK repositories config generated ---"
           else
             # Generate legacy OPKG customfeeds configuration for target image
             CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
@@ -185,7 +218,6 @@ jobs:
             echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" >> "${CUSTOM_FEEDS_FILE}"
             echo "src/gz peditxos_passwall_pkgs $BASE_URL/passwall_packages" >> "${CUSTOM_FEEDS_FILE}"
             echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "${CUSTOM_FEEDS_FILE}"
-            echo "--- Target OPKG custom feeds generated ---"
           fi
 
           # --- Branding Strategy ---
@@ -204,7 +236,6 @@ jobs:
           OPENWRT_TAINTS='no-all'
           OPENWRT_RELEASE='PeDitXOS (${{ github.event.inputs.openwrt_version }})'
           EOF
-          echo "--- os-release file generated ---"
 
           # --- Create UCI Defaults Script ---
           UCI_SCRIPT_DIR="${FILES_DIR}/etc/uci-defaults"
@@ -276,8 +307,9 @@ jobs:
         run: |
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
+          PKG_EXT="${{ env.PKG_EXT }}"
           
-          # Universal downloader using /releases/latest with APK->IPK fallback from individual repos
+          # Universal downloader using /releases/latest
           download_latest_pkg() {
             local REPO="$1"
             local SEARCH_PATTERN="$2"
@@ -387,10 +419,9 @@ jobs:
             fi
           done
 
-          # CRITICAL FIX: Safe offline local packages indexing using the verified, sandboxing-free static apk-tools.
-          # Installed in /usr/local/bin/apk, this avoids both format and sandboxing IO errors.
-          if [ "$IS_APK" = "true" ]; then
-            echo "--> Indexing local custom APK packages with stable host utility..."
+          # Index local custom packages ONLY if APK package engine is active
+          if [ "${{ env.IS_APK }}" = "true" ]; then
+            echo "--> Indexing local custom APK packages with stable non-sandboxed host utility..."
             cd "${CUSTOM_PKG_DIR}"
             
             if ls *.apk &>/dev/null; then
@@ -403,6 +434,8 @@ jobs:
               exit 1
             fi
             cd -
+          else
+            echo "--> OPKG target. Skipping manual host-side indexing."
           fi
     
       - name: 'Build Firmware Image'
