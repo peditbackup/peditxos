@@ -65,8 +65,15 @@ jobs:
           # Forcefully register the universe repository to guarantee package availability
           sudo add-apt-repository -y universe || true
           
+          # CRITICAL FIX: Disable AppArmor restriction on unprivileged user namespaces in Ubuntu 24.04 (Noble).
+          # This completely prevents 'IO ERROR' or sandbox-related failures when running apk-tools.
+          echo "Disabling AppArmor unprivileged user namespace restriction..."
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns || true
+          fi
+          
           # Download official stable static apk-tools v2 (2.14.x) from Alpine v3.20 to avoid apt-get Noble failure.
-          # This avoids seccomp/sandboxing IO errors introduced in newer apk versions on GitHub Actions runners.
           echo "Resolving official static compiled apk-tools v2 from Alpine v3.20..."
           HTML=$(curl -sL -A "Mozilla/5.0" "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/")
           APK_FILENAME=$(echo "$HTML" | grep -oE 'apk-tools-static-[0-9.]+-r[0-9]+\.apk' | head -n 1)
