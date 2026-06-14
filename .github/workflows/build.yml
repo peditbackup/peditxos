@@ -120,9 +120,9 @@ jobs:
             sudo chmod +x /usr/local/bin/apk-real
             
             sudo bash -c 'cat > /usr/local/bin/apk << "EOF_WRAPPER"
-#!/bin/sh
-exec /usr/local/bin/apk-real --no-sandbox "$@"
-EOF_WRAPPER'
+          #!/bin/sh
+          exec /usr/local/bin/apk-real --no-sandbox "$@"
+          EOF_WRAPPER'
             sudo chmod +x /usr/local/bin/apk
           fi
 
