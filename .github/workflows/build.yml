@@ -170,7 +170,6 @@ jobs:
             echo "$BASE_URL/passwall_luci" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall_packages" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
-            # حذف خط file:///packages - دیگر نیازی نیست
             echo "--- APK repositories config generated ---"
           else
             CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
@@ -384,22 +383,29 @@ jobs:
             download_themeswitch
           fi
 
+          # نرمالایز کردن اسم فایل‌ها برای APK
           if [ "${{ env.IS_APK }}" = "true" ]; then
             echo "--> Normalizing APK filenames for ImageBuilder compatibility..."
             for apk_file in "${CUSTOM_PKG_DIR}"/*.apk; do
               [ -f "$apk_file" ] || continue
               filename=$(basename "$apk_file")
-              newname=$(echo "$filename" | sed \
-                -e 's/-aarch64_cortex-a53\.apk$/.apk/' \
-                -e 's/-aarch64_cortex-a72\.apk$/.apk/' \
-                -e 's/-x86_64\.apk$/.apk/' \
-                -e 's/-mipsel_24kc\.apk$/.apk/' \
-                -e 's/-mips_24kc\.apk$/.apk/' \
-                -e 's/-arm_cortex-a9_vfpv3-d16\.apk$/.apk/' \
-                -e 's/-arm_cortex-a7_neon-vfpv4\.apk$/.apk/' \
-                -e 's/_all\.apk$/.apk/' \
-              )
-              newname=$(echo "$newname" | sed 's/-v\([0-9]\)/-\1/g')
+              # حذف معماری و -apk و هر چیز بعد از نسخه
+              # مثال: luci-app-themeswitch-v1.0.5-aarch64_cortex-a53-apk.apk -> luci-app-themeswitch-1.0.5.apk
+              newname=$(echo "$filename" | sed -E \
+                -e 's/-v([0-9])/-\1/' \
+                -e 's/-aarch64_cortex-a[0-9]+//' \
+                -e 's/-x86_64//' \
+                -e 's/-mipsel_[0-9a-z]+//' \
+                -e 's/-mips_[0-9a-z]+//' \
+                -e 's/-arm_cortex-a[0-9]+[_-][a-z0-9-]+//' \
+                -e 's/-generic//' \
+                -e 's/-apk//' \
+                -e 's/_all//' \
+                -e 's/\.apk$/.apk/' \
+                -e 's/--/-/g' \
+                -e 's/\.\././g')
+              # حذف خط تیره اضافی آخر
+              newname=$(echo "$newname" | sed 's/-\.apk/.apk/')
               if [ "$filename" != "$newname" ]; then
                 mv "${CUSTOM_PKG_DIR}/${filename}" "${CUSTOM_PKG_DIR}/${newname}"
                 echo "  Renamed: ${filename} -> ${newname}"
@@ -408,7 +414,7 @@ jobs:
             echo "--> APK filename normalization complete."
           fi
 
-          # برای APK، ایندکس محلی را با دستور package_index بساز
+          # برای APK، ایندکس محلی را با make package_index می‌سازیم
           if [ "${{ env.IS_APK }}" = "true" ]; then
             echo "--> Generating local package index with 'make package_index'..."
             cd "${{ env.IMAGEBUILDER_DIR }}"
@@ -436,7 +442,7 @@ jobs:
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
 
-          # دوباره ایندکس محلی را به‌روز می‌کنیم (در صورت نیاز)
+          # دوباره ایندکس را به‌روز می‌کنیم (احتیاط)
           if [ "${{ env.IS_APK }}" = "true" ]; then
             echo "--> Refreshing package index before build..."
             make package_index
