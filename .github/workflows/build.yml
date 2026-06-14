@@ -429,18 +429,35 @@ jobs:
             fi
           done
           
-          # Index local APK packages so ImageBuilder can see them
+          # Index local APK packages using ImageBuilder's own apk binary (NOT Alpine apk)
           if [ "${{ env.IS_APK }}" = "true" ]; then
             echo "--> Indexing local APK packages..."
-            cd "${CUSTOM_PKG_DIR}"
-            if ls *.apk &>/dev/null; then
-              /usr/local/bin/apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
-              /usr/local/bin/apk index --allow-untrusted -o packages.adb *.apk
-              echo "--> APK indexes successfully created."
+            LOCAL_APK_COUNT=$(find "${CUSTOM_PKG_DIR}" -maxdepth 1 -name "*.apk" | wc -l)
+            if [ "$LOCAL_APK_COUNT" -gt 0 ]; then
+              # Find the apk binary that ships with OpenWrt ImageBuilder itself
+              IB_APK_BIN=$(find "${{ env.IMAGEBUILDER_DIR }}/staging_dir" -type f -name "apk" -executable 2>/dev/null | head -n 1)
+              if [ -z "$IB_APK_BIN" ]; then
+                echo "::error::Could not find OpenWrt's own apk binary inside staging_dir. Cannot index local packages."
+                exit 1
+              fi
+              echo "--> Found OpenWrt apk at: ${IB_APK_BIN}"
+
+              # Use mkndx (OpenWrt 25+ apk command) to build packages.adb index
+              "${IB_APK_BIN}" mkndx \
+                --no-sandbox \
+                --output "${CUSTOM_PKG_DIR}/packages.adb" \
+                --description "PeDitXOS Local Packages" \
+                ${CUSTOM_PKG_DIR}/*.apk
+              
+              if [ $? -eq 0 ] && [ -s "${CUSTOM_PKG_DIR}/packages.adb" ]; then
+                echo "--> packages.adb index created successfully. Total packages: ${LOCAL_APK_COUNT}"
+              else
+                echo "::error::OpenWrt apk mkndx failed to create packages.adb"
+                exit 1
+              fi
             else
               echo "::warning::No .apk files found to index."
             fi
-            cd -
           fi
 
       - name: 'Build Firmware Image'
