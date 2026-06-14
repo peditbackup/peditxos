@@ -121,11 +121,10 @@ jobs:
             sudo mv /tmp/sbin/apk.static /usr/local/bin/apk-real
             sudo chmod +x /usr/local/bin/apk-real
             
-            sudo bash -c 'cat > /usr/local/bin/apk << "EOF_WRAPPER"
-          #!/bin/sh
-          exec /usr/local/bin/apk-real --no-sandbox "$@"
-          EOF_WRAPPER'
-            sudo chmod +x /usr/local/bin/apk
+            # Do NOT create a global /usr/local/bin/apk wrapper.
+            # It would override ImageBuilder's internal apk calls and break the build.
+            # apk-real is only used explicitly where needed (e.g. key downloads).
+            echo "apk-real installed at /usr/local/bin/apk-real (no global override)"
           fi
 
           # Proxy all potential internal ImageBuilder source files to our custom repository server with correct path prefix (/openwrt)
@@ -134,7 +133,25 @@ jobs:
             sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' "$file"
             sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' "$file"
             sed -i 's/^option check_signature.*/option check_signature 0/' "$file"
+            # For APK repos: disable signature verification
+            sed -i 's|^https://|http://|g' "$file"
           done
+
+          # For APK-based ImageBuilders: patch apk world config to allow unsigned packages
+          if [ "${{ env.IS_APK }}" = "true" ]; then
+            find "${IMAGEBUILDER_DIR}" -type f -name "apk.conf" 2>/dev/null | while read -r file; do
+              echo "Patching APK config: $file"
+              # Allow unsigned/untrusted repos
+              grep -q 'allow-untrusted' "$file" || echo 'allow-untrusted = true' >> "$file"
+              grep -q 'no-check-certificate' "$file" || echo 'no-check-certificate = true' >> "$file"
+              cat "$file"
+            done
+            # Also patch the Makefile's APK_FLAGS if present
+            if grep -q 'APK_FLAGS' "${IMAGEBUILDER_DIR}/Makefile" 2>/dev/null; then
+              sed -i 's|APK_FLAGS\s*:=|APK_FLAGS := --allow-untrusted|g' "${IMAGEBUILDER_DIR}/Makefile"
+              echo "Patched APK_FLAGS in Makefile"
+            fi
+          fi
 
           # Download and register the public custom key to all trusted key locations within ImageBuilder (Using fallback '|| echo' to bypass 404/server crashes)
           find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
@@ -142,13 +159,8 @@ jobs:
             wget -qO "$dir/passwall.rsa.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Warning: Custom key download failed, proceeding without key registration inside ImageBuilder"
           done
           
-          # Replace ImageBuilder's internal staging apk with our wrapper
-          if [ "${{ env.IS_APK }}" = "true" ]; then
-            find "${IMAGEBUILDER_DIR}/staging_dir" -type f -name "apk" -executable 2>/dev/null | while read -r f; do
-              cp /usr/local/bin/apk "$f"
-              chmod +x "$f"
-            done
-          fi
+          # We do NOT replace ImageBuilder's staging_dir apk binary.
+          # ImageBuilder manages its own apk internally.
           
           echo "--- Signature check configurations and proxies initialized ---"
 
