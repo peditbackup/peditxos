@@ -62,10 +62,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
 
-          # Detect APK vs OPKG early so all steps can use it
           VERSION_INPUT="${{ github.event.inputs.openwrt_version }}"
           VERSION_MAJOR=$(echo "$VERSION_INPUT" | cut -d. -f1)
-          VERSION_MINOR=$(echo "$VERSION_INPUT" | cut -d. -f2)
           
           IS_APK=false
           if [[ "$VERSION_INPUT" == *"snapshot"* || "$VERSION_INPUT" == *"master"* ]]; then
@@ -108,59 +106,42 @@ jobs:
           TARGET_ARCH="${{ github.event.inputs.target_arch }}"
           echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
           
-          # Setup Sandbox-free APK Wrapper for ImageBuilder
           if [ "${{ env.IS_APK }}" = "true" ]; then
             echo "Setting up APK tools wrapper to prevent sandbox errors..."
-            
-            # Dynamically fetch the latest apk-tools-static to prevent 404/Exit Code 8 errors
             APK_FILENAME=$(curl -s "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/" | grep -o 'href="apk-tools-static-[^"]*\.apk"' | sed 's/href="//;s/"//' | head -n 1)
             APK_URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/${APK_FILENAME}"
-            
             wget -qO /tmp/apk-static.apk "$APK_URL"
             tar -xf /tmp/apk-static.apk -C /tmp sbin/apk.static
             sudo mv /tmp/sbin/apk.static /usr/local/bin/apk-real
             sudo chmod +x /usr/local/bin/apk-real
-            
-            # Do NOT create a global /usr/local/bin/apk wrapper.
-            # It would override ImageBuilder's internal apk calls and break the build.
-            # apk-real is only used explicitly where needed (e.g. key downloads).
             echo "apk-real installed at /usr/local/bin/apk-real (no global override)"
           fi
 
-          # Proxy all potential internal ImageBuilder source files to our custom repository server with correct path prefix (/openwrt)
           find "${IMAGEBUILDER_DIR}" -type f \( -name "repositories.conf" -o -name "repositories" -o -name "apk.conf" \) 2>/dev/null | while read -r file; do
             echo "Adjusting sources in: $file"
             sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' "$file"
             sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' "$file"
             sed -i 's/^option check_signature.*/option check_signature 0/' "$file"
-            # For APK repos: disable signature verification
             sed -i 's|^https://|http://|g' "$file"
           done
 
-          # For APK-based ImageBuilders: patch apk world config to allow unsigned packages
           if [ "${{ env.IS_APK }}" = "true" ]; then
             find "${IMAGEBUILDER_DIR}" -type f -name "apk.conf" 2>/dev/null | while read -r file; do
               echo "Patching APK config: $file"
-              # Allow unsigned/untrusted repos
               grep -q 'allow-untrusted' "$file" || echo 'allow-untrusted = true' >> "$file"
               grep -q 'no-check-certificate' "$file" || echo 'no-check-certificate = true' >> "$file"
               cat "$file"
             done
-            # Also patch the Makefile's APK_FLAGS if present
             if grep -q 'APK_FLAGS' "${IMAGEBUILDER_DIR}/Makefile" 2>/dev/null; then
               sed -i 's|APK_FLAGS\s*:=|APK_FLAGS := --allow-untrusted|g' "${IMAGEBUILDER_DIR}/Makefile"
               echo "Patched APK_FLAGS in Makefile"
             fi
           fi
 
-          # Download and register the public custom key to all trusted key locations within ImageBuilder (Using fallback '|| echo' to bypass 404/server crashes)
           find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
             echo "Adding custom signature key to: $dir"
-            wget -qO "$dir/passwall.rsa.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Warning: Custom key download failed, proceeding without key registration inside ImageBuilder"
+            wget -qO "$dir/passwall.rsa.pub" http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || echo "Warning: Custom key download failed"
           done
-          
-          # We do NOT replace ImageBuilder's staging_dir apk binary.
-          # ImageBuilder manages its own apk internally.
           
           echo "--- Signature check configurations and proxies initialized ---"
 
@@ -175,9 +156,7 @@ jobs:
           IS_APK="${{ env.IS_APK }}"
           PKG_EXT="${{ env.PKG_EXT }}"
           
-          # --- Create Custom Repositories / Feeds ---
           if [ "$IS_APK" = "true" ]; then
-            # Generate APK repository feeds configuration aligning with repository.peditxos.ir layout
             CUSTOM_REPOS_DIR="${FILES_DIR}/etc/apk"
             mkdir -p "${CUSTOM_REPOS_DIR}"
             CUSTOM_REPOS_FILE="${CUSTOM_REPOS_DIR}/repositories"
@@ -191,9 +170,10 @@ jobs:
             echo "$BASE_URL/passwall_luci" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall_packages" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
+            # اضافه کردن مخزن محلی برای بسته‌های سفارشی
+            echo "file:///packages" >> "${CUSTOM_REPOS_FILE}"
             echo "--- APK repositories config generated ---"
           else
-            # Generate legacy OPKG customfeeds configuration
             CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
             mkdir -p "${CUSTOM_FEEDS_DIR}"
             CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
@@ -203,11 +183,9 @@ jobs:
             echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" >> "${CUSTOM_FEEDS_FILE}"
             echo "src/gz peditxos_passwall_pkgs $BASE_URL/passwall_packages" >> "${CUSTOM_FEEDS_FILE}"
             echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "${CUSTOM_FEEDS_FILE}"
-            echo "file:///packages" >> "${CUSTOM_REPOS_FILE}"
             echo "--- Custom OPKG feeds generated ---"
           fi
 
-          # --- Branding Strategy ---
           cat << EOF > "${FILES_DIR}/etc/os-release"
           NAME='PeDitXOS'
           VERSION='${{ github.event.inputs.openwrt_version }}'
@@ -223,9 +201,7 @@ jobs:
           OPENWRT_TAINTS='no-all'
           OPENWRT_RELEASE='PeDitXOS (${{ github.event.inputs.openwrt_version }})'
           EOF
-          echo "--- os-release file generated ---"
 
-          # --- Create UCI Defaults Script with engine-adaptive fallback logic ---
           UCI_SCRIPT_DIR="${FILES_DIR}/etc/uci-defaults"
           mkdir -p "${UCI_SCRIPT_DIR}"
           UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
@@ -233,7 +209,6 @@ jobs:
           echo "#!/bin/sh" > "${UCI_SCRIPT_PATH}"
           
           cat << 'EOF_SCRIPT' >> "${UCI_SCRIPT_PATH}"
-          # 1. Handle Legacy OPKG environment if detected
           if [ -d /etc/opkg ]; then
             if [ -f /etc/opkg.conf ]; then
               sed -i 's/option check_signature/# option check_signature/g' /etc/opkg.conf
@@ -247,13 +222,10 @@ jobs:
             rm -f /tmp/passwall.pub
           fi
 
-          # 2. Handle Modern APK (OpenWrt 25+) environment if detected
           if [ -d /etc/apk ]; then
             if [ -f /etc/apk/repositories ]; then
               sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
               sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
-              
-              # Safely append dynamic APK repositories fallback if needed
               if ! grep -q "openwrt-passwall-build" /etc/apk/repositories 2>/dev/null; then
                 if [ -f /etc/openwrt_release ]; then
                   . /etc/openwrt_release
@@ -267,13 +239,11 @@ jobs:
                 fi
               fi
             fi
-            # Place signature keys properly into APK database with wget fallback
             mkdir -p /etc/apk/keys
             wget -qO /etc/apk/keys/passwall.rsa.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub > /dev/null 2>&1 || echo "Failed to download custom APK public key"
           fi
           EOF_SCRIPT
 
-          # UCI settings
           THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
           echo "uci -q batch <<EOF" >> "${UCI_SCRIPT_PATH}"
           echo "set system.@system[0].hostname='PeDitXOS'" >> "${UCI_SCRIPT_PATH}"
@@ -311,7 +281,6 @@ jobs:
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           
-          # Dynamic package downloader that supports both .apk and .ipk dynamically (with wget non-blocking fallback)
           download_latest_pkg() {
             local REPO_PATH="$1"
             if [ -z "$REPO_PATH" ]; then return; fi
@@ -337,56 +306,39 @@ jobs:
             local PKG_EXT="${{ env.PKG_EXT }}"
 
             echo "--> Attempting to download ${REPO_PATH} for arch ${TARGET_ARCH}..."
-
             local API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
-
-            local API_RESPONSE
-            API_RESPONSE=$(curl -sL --fail "$API_URL") || {
+            local API_RESPONSE=$(curl -sL --fail "$API_URL") || {
               echo "::error::Failed to fetch latest release."
               exit 1
             }
 
-            # بررسی وجود assets
             if ! echo "$API_RESPONSE" | jq -e '.assets | length > 0' > /dev/null; then
               echo "::error::No assets found in release."
               exit 1
             fi
 
-            # 🎯 پیدا کردن فایل مناسب (arch + ext)
             local PKG_URL
             PKG_URL=$(echo "$API_RESPONSE" | jq -r \
               --arg ARCH "$TARGET_ARCH" \
-              --arg EXT ".$PKG_EXT" \
-              '.assets[] 
-               | select(.name | contains($ARCH) and endswith($EXT)) 
-               | .browser_download_url' | head -n 1)
+              --arg EXT "$PKG_EXT" \
+              '.assets[] | select(.name | contains($ARCH) and contains("-$EXT.")) | .browser_download_url' | head -n 1)
 
             local PKG_NAME
             PKG_NAME=$(echo "$API_RESPONSE" | jq -r \
               --arg ARCH "$TARGET_ARCH" \
-              --arg EXT ".$PKG_EXT" \
-              '.assets[] 
-               | select(.name | contains($ARCH) and endswith($EXT)) 
-               | .name' | head -n 1)
+              --arg EXT "$PKG_EXT" \
+              '.assets[] | select(.name | contains($ARCH) and contains("-$EXT.")) | .name' | head -n 1)
 
-            # 🔄 fallback اگر arch-specific نبود
             if [ -z "$PKG_URL" ] || [ "$PKG_URL" = "null" ]; then
               echo "::warning::Exact arch match not found, trying generic..."
-
               PKG_URL=$(echo "$API_RESPONSE" | jq -r \
-                --arg EXT ".$PKG_EXT" \
-                '.assets[] 
-                 | select(.name | contains("generic") and endswith($EXT)) 
-                 | .browser_download_url' | head -n 1)
-
+                --arg EXT "$PKG_EXT" \
+                '.assets[] | select(.name | contains("generic") and contains("-$EXT.")) | .browser_download_url' | head -n 1)
               PKG_NAME=$(echo "$API_RESPONSE" | jq -r \
-                --arg EXT ".$PKG_EXT" \
-                '.assets[] 
-                 | select(.name | contains("generic") and endswith($EXT)) 
-                 | .name' | head -n 1)
+                --arg EXT "$PKG_EXT" \
+                '.assets[] | select(.name | contains("generic") and contains("-$EXT.")) | .name' | head -n 1)
             fi
 
-            # ❌ اگر هنوز چیزی پیدا نشد
             if [ -z "$PKG_URL" ] || [ "$PKG_URL" = "null" ]; then
               echo "::error::No suitable themeswitch package found."
               echo "::debug::Available assets:"
@@ -394,12 +346,10 @@ jobs:
               exit 1
             fi
 
-            # ⬇️ دانلود
             wget -q "$PKG_URL" -P "${CUSTOM_PKG_DIR}" || {
               echo "::error::Download failed."
               exit 1
             }
-
             echo "--> Successfully downloaded ${PKG_NAME}"
           }
 
@@ -431,14 +381,11 @@ jobs:
             download_themeswitch
           fi
 
-          # Rename custom APK files to match OpenWrt's expected naming convention
-          # OpenWrt APK index expects: <pkgname>-<version>.apk (no arch suffix, no 'v' prefix)
           if [ "${{ env.IS_APK }}" = "true" ]; then
             echo "--> Normalizing APK filenames for ImageBuilder compatibility..."
             for apk_file in "${CUSTOM_PKG_DIR}"/*.apk; do
               [ -f "$apk_file" ] || continue
               filename=$(basename "$apk_file")
-              # Remove arch suffix: e.g. -aarch64_cortex-a53 or -x86_64
               newname=$(echo "$filename" | sed \
                 -e 's/-aarch64_cortex-a53\.apk$/.apk/' \
                 -e 's/-aarch64_cortex-a72\.apk$/.apk/' \
@@ -449,7 +396,6 @@ jobs:
                 -e 's/-arm_cortex-a7_neon-vfpv4\.apk$/.apk/' \
                 -e 's/_all\.apk$/.apk/' \
               )
-              # Remove leading 'v' from version: e.g. -v1.0.5 -> -1.0.5
               newname=$(echo "$newname" | sed 's/-v\([0-9]\)/-\1/g')
               if [ "$filename" != "$newname" ]; then
                 mv "${CUSTOM_PKG_DIR}/${filename}" "${CUSTOM_PKG_DIR}/${newname}"
@@ -459,58 +405,32 @@ jobs:
             echo "--> APK filename normalization complete."
           fi
 
-          # Build packages.adb index using OpenWrt's own apk tool from staging_dir
-          # This is REQUIRED - without it ImageBuilder won't find local .apk files
           if [ "${{ env.IS_APK }}" = "true" ]; then
             echo "--> Building packages.adb for local APK packages..."
-            
-            # Find apk binary inside ImageBuilder staging_dir (this is OpenWrt's apk, not Alpine)
             IB_APK=$(find "${{ env.IMAGEBUILDER_DIR }}/staging_dir/host" -name 'apk' -type f -executable 2>/dev/null | head -n 1)
-            
             if [ -z "$IB_APK" ]; then
               echo "::error::Cannot find apk binary in ImageBuilder staging_dir/host"
               exit 1
             fi
             echo "--> Using IB apk binary: $IB_APK"
             
-            # Find the signing key generated by ImageBuilder (Generate local signing keys step)
-            IB_KEY=$(find "${{ env.IMAGEBUILDER_DIR }}" -name '*.sec' -o -name 'key-build' 2>/dev/null | head -n 1)
+            CUSTOM_APKS=$(find "${CUSTOM_PKG_DIR}" -maxdepth 1 -name '*.apk' | grep -E '(luci-theme-|luci-app-themeswitch|passwall|peditxos)' || true)
             
-            APK_FILES=$(find "${CUSTOM_PKG_DIR}" -maxdepth 1 -name '*.apk' 2>/dev/null)
-            if [ -n "$APK_FILES" ]; then
-              if [ -n "$IB_KEY" ]; then
-                echo "--> Signing key found: $IB_KEY"
-                "$IB_APK" mkndx \
-                  --sign "$IB_KEY" \
-                  --output "${CUSTOM_PKG_DIR}/packages.adb" \
-                  --description "PeDitXOS Local" \
-                  $APK_FILES \
-                  && echo "--> packages.adb signed and created." \
-                  || {
-                    echo "::warning::Signed mkndx failed, trying unsigned..."
-                    "$IB_APK" mkndx \
-                      --output "${CUSTOM_PKG_DIR}/packages.adb" \
-                      --description "PeDitXOS Local" \
-                      $APK_FILES \
-                      && echo "--> packages.adb unsigned created." \
-                      || echo "::error::mkndx failed entirely"
-                  }
+            if [ -n "$CUSTOM_APKS" ]; then
+              if "$IB_APK" mkndx --allow-untrusted --output "${CUSTOM_PKG_DIR}/packages.adb" --description "PeDitXOS Local" $CUSTOM_APKS 2>/dev/null; then
+                echo "--> packages.adb created with --allow-untrusted"
               else
-                echo "--> No signing key found, building unsigned index..."
-                "$IB_APK" mkndx \
-                  --output "${CUSTOM_PKG_DIR}/packages.adb" \
-                  --description "PeDitXOS Local" \
-                  $APK_FILES \
-                  && echo "--> packages.adb unsigned created." \
-                  || echo "::error::mkndx failed"
+                echo "--> --allow-untrusted not supported, trying without..."
+                "$IB_APK" mkndx --output "${CUSTOM_PKG_DIR}/packages.adb" --description "PeDitXOS Local" $CUSTOM_APKS && \
+                  echo "--> packages.adb created (unsigned)" || \
+                  echo "::error::mkndx failed"
               fi
               ls -lh "${CUSTOM_PKG_DIR}/packages.adb" 2>/dev/null || echo "::error::packages.adb was not created!"
             else
-              echo "::warning::No .apk files found to index."
+              echo "::warning::No custom .apk files found to index."
             fi
           fi
           
-          # Convert extra packages to lowercase to prevent mobile capitalization errors
           EXTRA_PKGS_LOWER=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
           for pkg in $EXTRA_PKGS_LOWER; do
             if [[ "$pkg" == "luci-app-passwall" ]]; then
@@ -521,9 +441,6 @@ jobs:
             fi
           done
           
-          # NOTE: No manual APK indexing needed.
-          # OpenWrt ImageBuilder automatically detects and indexes .apk files
-          # placed in the packages/ directory during "make image".
           LOCAL_PKG_COUNT=$(find "${CUSTOM_PKG_DIR}" -maxdepth 1 \( -name "*.apk" -o -name "*.ipk" \) 2>/dev/null | wc -l)
           echo "--> Local packages ready for ImageBuilder: ${LOCAL_PKG_COUNT} files in ${CUSTOM_PKG_DIR}"
 
@@ -533,30 +450,26 @@ jobs:
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
 
-          # Rebuild packages.adb AFTER make clean generates local signing keys
-          # (ImageBuilder runs 'Generate local signing keys' as part of make image internals,
-          #  but the key-build file is created during first make invocation - we pre-generate here)
           if [ "${{ env.IS_APK }}" = "true" ]; then
             CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
             IB_APK=$(find staging_dir/host -name 'apk' -type f -executable 2>/dev/null | head -n 1)
-            APK_FILES=$(find "${CUSTOM_PKG_DIR}" -maxdepth 1 -name '*.apk' 2>/dev/null | tr '\n' ' ')
+            CUSTOM_APKS=$(find "${CUSTOM_PKG_DIR}" -maxdepth 1 -name '*.apk' | grep -E '(luci-theme-|luci-app-themeswitch|passwall|peditxos)' || true)
             
-            if [ -n "$IB_APK" ] && [ -n "$APK_FILES" ]; then
+            if [ -n "$IB_APK" ] && [ -n "$CUSTOM_APKS" ]; then
               echo "--> Rebuilding packages.adb with IB apk: $IB_APK"
-              "$IB_APK" mkndx \
-                --output "${CUSTOM_PKG_DIR}/packages.adb" \
-                --description "PeDitXOS Local" \
-                $APK_FILES \
-              && echo "--> packages.adb ready: $(ls -lh ${CUSTOM_PKG_DIR}/packages.adb)" \
-              || echo "::warning::mkndx failed in build step, ImageBuilder will try to fetch from remote"
+              if "$IB_APK" mkndx --allow-untrusted --output "${CUSTOM_PKG_DIR}/packages.adb" --description "PeDitXOS Local" $CUSTOM_APKS 2>/dev/null; then
+                echo "--> packages.adb rebuilt with --allow-untrusted"
+              else
+                "$IB_APK" mkndx --output "${CUSTOM_PKG_DIR}/packages.adb" --description "PeDitXOS Local" $CUSTOM_APKS && \
+                  echo "--> packages.adb rebuilt unsigned" || \
+                  echo "::warning::mkndx failed in build step"
+              fi
             fi
           fi
           
-          # --- Smart Package Selection Logic ---
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
           BASE_PACKAGES="luci luci-ssl luci-compat curl screen sshpass procps-ng-pkill luci-app-ttyd coreutils wget-ssl coreutils-base64 coreutils-nohup"
           
-          # Convert all input packages to lowercase
           FINAL_EXTRA_PACKAGES=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
 
           APPLY_LOW_FLASH_RESTRICTIONS=false
@@ -613,8 +526,6 @@ jobs:
             fi
           fi
           
-          # Assemble the final list of all packages
-          # Explicitly exclude sing-box and hysteria to prevent them from slipping in and taking up space
           ALL_PACKAGES="${BASE_PACKAGES} ${THEME_PACKAGES} -luci-theme-bootstrap -dnsmasq dnsmasq-full ${FINAL_EXTRA_PACKAGES} -sing-box -hysteria"
           
           echo "Building with Profile: ${{ github.event.inputs.device_profile }}"
@@ -721,13 +632,13 @@ jobs:
           echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_OUTPUT
 
       - name: 'Upload Firmware to SourceForge'
+        if: always() && steps.organize_files.outputs.ARCHIVE_NAME != ''
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SF_USERNAME: ${{ secrets.SF_USERNAME }}
           SF_PROJECT_NAME: ${{ secrets.SF_PROJECT_NAME }}
         run: |
           mkdir -p ~/.ssh
-          echo "${SSH_PRIVATE_KEY}" > ~/.rsa
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
@@ -757,11 +668,10 @@ jobs:
           STATUS="failed"
           if [ "${{ job.status }}" == "success" ]; then STATUS="completed"; fi
           DOWNLOAD_URL=""
-          if [ "$STATUS" == "completed" ]; then
+          if [ "$STATUS" == "completed" ] && [ -n "${{ steps.organize_files.outputs.ARCHIVE_NAME }}" ]; then
             DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
           fi
           
-          # UPDATED URL to allow access despite Apache folder conflict
           curl -X POST "https://firmware.peditxos.ir/api/github-status" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_PAT }}" \
