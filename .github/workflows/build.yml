@@ -319,7 +319,7 @@ jobs:
           }
 
           download_themeswitch() {
-            local REPO_PATH="peditx/luci-app-themeswitch"
+            local REPO_PATH="PeDItXOS/luci-app-themeswitch"
             echo "--> Attempting to download ${REPO_PATH} for arch ${{ env.TARGET_ARCH }}..."
             local API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
             local API_RESPONSE=$(curl -sL --fail "$API_URL") || { echo "::error::Failed to fetch latest release."; exit 1; }
@@ -364,8 +364,8 @@ jobs:
             fi
           }
 
-          download_latest_pkg "peditx/luci-theme-peditx"
-          download_latest_pkg "peditx/luci-theme-carbonpx"
+          download_latest_pkg "PeDitXOS/luci-theme-peditx"
+          download_latest_pkg "PeDitXOS/luci-theme-carbonpx"
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
             download_themeswitch
           fi
@@ -374,10 +374,10 @@ jobs:
           EXTRA_PKGS_LOWER=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
           for pkg in $EXTRA_PKGS_LOWER; do
             if [[ "$pkg" == "luci-app-passwall" ]]; then
-              download_passwall_bundle "peditx/openwrt-passwall"
+              download_passwall_bundle "Openwrt-Passwall/openwrt-passwall"
             fi
             if [[ "$pkg" == "luci-app-passwall2" ]]; then
-              download_passwall_bundle "peditx/openwrt-passwall2"
+              download_passwall_bundle "Openwrt-Passwall/openwrt-passwall2"
             fi
           done
           
