@@ -170,8 +170,6 @@ jobs:
             echo "$BASE_URL/passwall_luci" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall_packages" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
-            # اضافه کردن مخزن محلی برای بسته‌های سفارشی
-            echo "file:///packages" >> "${CUSTOM_REPOS_FILE}"
             echo "--- APK repositories config generated ---"
           else
             CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
@@ -320,7 +318,6 @@ jobs:
             local PKG_URL=""
             local PKG_NAME=""
             
-            # ابتدا سعی کنیم با معماری دقیق و پسوند مناسب (مثلاً -apk.apk یا -ipk.ipk)
             while IFS= read -r line; do
               name=$(echo "$line" | jq -r '.name')
               url=$(echo "$line" | jq -r '.browser_download_url')
@@ -392,7 +389,7 @@ jobs:
             for apk_file in "${CUSTOM_PKG_DIR}"/*.apk; do
               [ -f "$apk_file" ] || continue
               filename=$(basename "$apk_file")
-              # 1. Remove architecture and extra patterns
+              # Remove architecture suffixes and extra patterns
               newname=$(echo "$filename" | sed -E \
                 -e 's/-(aarch64|x86_64|mipsel|mips|arm)_[^.]*\.apk$/.apk/' \
                 -e 's/_[a-z0-9_-]+\.apk$/.apk/' \
@@ -400,17 +397,15 @@ jobs:
                 -e 's/-apk\.apk$/.apk/' \
                 -e 's/_all\.apk$/.apk/' \
               )
-              # 2. Convert underscore between name and version to dash
+              # Convert underscore between name and version to dash
               if [[ "$newname" =~ ^([a-zA-Z0-9_.-]+)_([0-9].*\.apk)$ ]]; then
                 newname="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
               fi
-              # 3. Convert e.g., -01 to -r01 (required by APK)
+              # Convert e.g., -01 to -r01 (required by APK)
               newname=$(echo "$newname" | sed -E 's/-([0-9]{2})\.apk$/-r\1.apk/')
-              # 4. Remove leading 'v' from version (e.g., -v1.0.5 -> -1.0.5)
+              # Remove leading 'v' from version (e.g., -v1.0.5 -> -1.0.5)
               newname=$(echo "$newname" | sed -E 's/-v([0-9])/-\1/')
-              # 5. Remove everything after version (important for themeswitch)
-              newname=$(echo "$newname" | sed -E 's/(-[0-9]+\.[0-9]+\.[0-9]+[^-]*).*\.apk$/\1.apk/')
-              # 6. Remove duplicate dashes
+              # Remove duplicate dashes
               newname=$(echo "$newname" | sed 's/--/-/g')
               if [ "$filename" != "$newname" ]; then
                 mv "${CUSTOM_PKG_DIR}/${filename}" "${CUSTOM_PKG_DIR}/${newname}"
