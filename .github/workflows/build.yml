@@ -316,29 +316,33 @@ jobs:
               exit 1
             fi
 
-            local PKG_URL
-            PKG_URL=$(echo "$API_RESPONSE" | jq -r \
-              --arg ARCH "$TARGET_ARCH" \
-              --arg EXT "$PKG_EXT" \
-              '.assets[] | select(.name | contains($ARCH) and contains("-$EXT")) | .browser_download_url' | head -n 1)
-
-            local PKG_NAME
-            PKG_NAME=$(echo "$API_RESPONSE" | jq -r \
-              --arg ARCH "$TARGET_ARCH" \
-              --arg EXT "$PKG_EXT" \
-              '.assets[] | select(.name | contains($ARCH) and contains("-$EXT")) | .name' | head -n 1)
-
-            if [ -z "$PKG_URL" ] || [ "$PKG_URL" = "null" ]; then
+            local PKG_URL=""
+            local PKG_NAME=""
+            
+            while IFS= read -r line; do
+              name=$(echo "$line" | jq -r '.name')
+              url=$(echo "$line" | jq -r '.browser_download_url')
+              if [[ "$name" == *"$TARGET_ARCH"* && "$name" == *".$PKG_EXT" && "$name" == *"-$PKG_EXT."* ]]; then
+                PKG_URL="$url"
+                PKG_NAME="$name"
+                break
+              fi
+            done < <(echo "$API_RESPONSE" | jq -c '.assets[]')
+            
+            if [ -z "$PKG_URL" ]; then
               echo "::warning::Exact arch match not found, trying generic..."
-              PKG_URL=$(echo "$API_RESPONSE" | jq -r \
-                --arg EXT "$PKG_EXT" \
-                '.assets[] | select(.name | contains("generic") and contains("-$EXT")) | .browser_download_url' | head -n 1)
-              PKG_NAME=$(echo "$API_RESPONSE" | jq -r \
-                --arg EXT "$PKG_EXT" \
-                '.assets[] | select(.name | contains("generic") and contains("-$EXT")) | .name' | head -n 1)
+              while IFS= read -r line; do
+                name=$(echo "$line" | jq -r '.name')
+                url=$(echo "$line" | jq -r '.browser_download_url')
+                if [[ "$name" == *"generic"* && "$name" == *".$PKG_EXT" && "$name" == *"-$PKG_EXT."* ]]; then
+                  PKG_URL="$url"
+                  PKG_NAME="$name"
+                  break
+                fi
+              done < <(echo "$API_RESPONSE" | jq -c '.assets[]')
             fi
 
-            if [ -z "$PKG_URL" ] || [ "$PKG_URL" = "null" ]; then
+            if [ -z "$PKG_URL" ]; then
               echo "::error::No suitable themeswitch package found."
               echo "::debug::Available assets:"
               echo "$API_RESPONSE" | jq -r '.assets[].name'
