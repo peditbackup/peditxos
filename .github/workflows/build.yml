@@ -383,35 +383,41 @@ jobs:
             download_themeswitch
           fi
 
-          # نرمالایز کردن اسم فایل‌ها برای APK
+          # نرمالایز کردن اسم فایل‌های APK - نسخه نهایی و دقیق
           if [ "${{ env.IS_APK }}" = "true" ]; then
             echo "--> Normalizing APK filenames for ImageBuilder compatibility..."
             for apk_file in "${CUSTOM_PKG_DIR}"/*.apk; do
               [ -f "$apk_file" ] || continue
               filename=$(basename "$apk_file")
-              # حذف معماری و -apk و هر چیز بعد از نسخه
-              # مثال: luci-app-themeswitch-v1.0.5-aarch64_cortex-a53-apk.apk -> luci-app-themeswitch-1.0.5.apk
+              
+              # حذف بخش معماری و پسوند اضافی بدون تغییر نسخه
+              # مثال: luci-theme-carbonpx_1.0.5-r01_aarch64_cortex-a53.apk -> luci-theme-carbonpx_1.0.5-r01.apk
               newname=$(echo "$filename" | sed -E \
-                -e 's/-v([0-9])/-\1/' \
-                -e 's/-aarch64_cortex-a[0-9]+//' \
-                -e 's/-x86_64//' \
-                -e 's/-mipsel_[0-9a-z]+//' \
-                -e 's/-mips_[0-9a-z]+//' \
-                -e 's/-arm_cortex-a[0-9]+[_-][a-z0-9-]+//' \
-                -e 's/-generic//' \
-                -e 's/-apk//' \
-                -e 's/_all//' \
-                -e 's/\.apk$/.apk/' \
-                -e 's/--/-/g' \
-                -e 's/\.\././g')
-              # حذف خط تیره اضافی آخر
-              newname=$(echo "$newname" | sed 's/-\.apk/.apk/')
+                -e 's/_(aarch64|x86_64|mipsel|mips|arm)_.*\.apk$/.apk/' \
+                -e 's/-aarch64_[^.]*\.apk$/.apk/' \
+                -e 's/-x86_64\.apk$/.apk/' \
+                -e 's/-generic\.apk$/.apk/' \
+                -e 's/-apk\.apk$/.apk/' \
+                -e 's/_all\.apk$/.apk/' \
+              )
+              # تبدیل زیرخط به خط فاصله فقط برای جداکننده نام بسته و نسخه
+              # یعنی luci-theme-carbonpx_1.0.5 -> luci-theme-carbonpx-1.0.5
+              if [[ "$newname" =~ ^(.+)_([0-9].*\.apk)$ ]]; then
+                newname="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+              fi
+              # حذف v اضافی از نسخه (v1.0.5 -> 1.0.5)
+              newname=$(echo "$newname" | sed -E 's/-v([0-9])/-\1/')
+              # حذف خط فاصله تکراری
+              newname=$(echo "$newname" | sed 's/--/-/g')
+              
               if [ "$filename" != "$newname" ]; then
                 mv "${CUSTOM_PKG_DIR}/${filename}" "${CUSTOM_PKG_DIR}/${newname}"
                 echo "  Renamed: ${filename} -> ${newname}"
               fi
             done
             echo "--> APK filename normalization complete."
+            echo "=== Final APK filenames in packages/ ==="
+            ls -la "${CUSTOM_PKG_DIR}"/*.apk
           fi
 
           # برای APK، ایندکس محلی را با make package_index می‌سازیم
