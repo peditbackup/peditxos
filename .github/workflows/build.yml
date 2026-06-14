@@ -203,6 +203,7 @@ jobs:
             echo "src/gz peditxos_passwall_luci $BASE_URL/passwall_luci" >> "${CUSTOM_FEEDS_FILE}"
             echo "src/gz peditxos_passwall_pkgs $BASE_URL/passwall_packages" >> "${CUSTOM_FEEDS_FILE}"
             echo "src/gz peditxos_passwall2 $BASE_URL/passwall2" >> "${CUSTOM_FEEDS_FILE}"
+            echo "file:///packages" >> "${CUSTOM_REPOS_FILE}"
             echo "--- Custom OPKG feeds generated ---"
           fi
 
