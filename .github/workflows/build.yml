@@ -170,7 +170,7 @@ jobs:
             echo "$BASE_URL/passwall_luci" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall_packages" >> "${CUSTOM_REPOS_FILE}"
             echo "$BASE_URL/passwall2" >> "${CUSTOM_REPOS_FILE}"
-            echo "file:///packages" >> "${CUSTOM_REPOS_FILE}"
+            # حذف خط file:///packages - دیگر نیازی نیست
             echo "--- APK repositories config generated ---"
           else
             CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
@@ -408,30 +408,13 @@ jobs:
             echo "--> APK filename normalization complete."
           fi
 
+          # برای APK، ایندکس محلی را با دستور package_index بساز
           if [ "${{ env.IS_APK }}" = "true" ]; then
-            echo "--> Building packages.adb for local APK packages..."
-            IB_APK=$(find "${{ env.IMAGEBUILDER_DIR }}/staging_dir/host" -name 'apk' -type f -executable 2>/dev/null | head -n 1)
-            if [ -z "$IB_APK" ]; then
-              echo "::error::Cannot find apk binary in ImageBuilder staging_dir/host"
-              exit 1
-            fi
-            echo "--> Using IB apk binary: $IB_APK"
-            
-            CUSTOM_APKS=$(find "${CUSTOM_PKG_DIR}" -maxdepth 1 -name '*.apk' | grep -E '(luci-theme-|luci-app-themeswitch|passwall|peditxos)' || true)
-            
-            if [ -n "$CUSTOM_APKS" ]; then
-              if "$IB_APK" mkndx --allow-untrusted --output "${CUSTOM_PKG_DIR}/packages.adb" --description "PeDitXOS Local" $CUSTOM_APKS 2>/dev/null; then
-                echo "--> packages.adb created with --allow-untrusted"
-              else
-                echo "--> --allow-untrusted not supported, trying without..."
-                "$IB_APK" mkndx --output "${CUSTOM_PKG_DIR}/packages.adb" --description "PeDitXOS Local" $CUSTOM_APKS && \
-                  echo "--> packages.adb created (unsigned)" || \
-                  echo "::error::mkndx failed"
-              fi
-              ls -lh "${CUSTOM_PKG_DIR}/packages.adb" 2>/dev/null || echo "::error::packages.adb was not created!"
-            else
-              echo "::warning::No custom .apk files found to index."
-            fi
+            echo "--> Generating local package index with 'make package_index'..."
+            cd "${{ env.IMAGEBUILDER_DIR }}"
+            make package_index
+            cd -
+            echo "--> Package index generated."
           fi
           
           EXTRA_PKGS_LOWER=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
@@ -453,21 +436,10 @@ jobs:
           cd "${{ env.IMAGEBUILDER_DIR }}"
           make clean
 
+          # دوباره ایندکس محلی را به‌روز می‌کنیم (در صورت نیاز)
           if [ "${{ env.IS_APK }}" = "true" ]; then
-            CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
-            IB_APK=$(find staging_dir/host -name 'apk' -type f -executable 2>/dev/null | head -n 1)
-            CUSTOM_APKS=$(find "${CUSTOM_PKG_DIR}" -maxdepth 1 -name '*.apk' | grep -E '(luci-theme-|luci-app-themeswitch|passwall|peditxos)' || true)
-            
-            if [ -n "$IB_APK" ] && [ -n "$CUSTOM_APKS" ]; then
-              echo "--> Rebuilding packages.adb with IB apk: $IB_APK"
-              if "$IB_APK" mkndx --allow-untrusted --output "${CUSTOM_PKG_DIR}/packages.adb" --description "PeDitXOS Local" $CUSTOM_APKS 2>/dev/null; then
-                echo "--> packages.adb rebuilt with --allow-untrusted"
-              else
-                "$IB_APK" mkndx --output "${CUSTOM_PKG_DIR}/packages.adb" --description "PeDitXOS Local" $CUSTOM_APKS && \
-                  echo "--> packages.adb rebuilt unsigned" || \
-                  echo "::warning::mkndx failed in build step"
-              fi
-            fi
+            echo "--> Refreshing package index before build..."
+            make package_index
           fi
           
           THEME_PACKAGES="luci-theme-peditx luci-theme-carbonpx luci-app-themeswitch"
