@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       device_target:
-        description: 'Device Target'
+        description: 'Device Target (e.g., x86/64, ipq40xx/generic)'
         required: true
         type: string
       device_profile:
@@ -24,165 +24,146 @@ on:
         required: true
         type: string
       openwrt_version:
-        description: 'OpenWrt Version'
+        description: 'OpenWrt Version (e.g., 24.10.0, 25.12.0, snapshot)'
         required: true
         type: string
       extra_packages:
-        description: 'Extra packages'
+        description: 'Extra packages (space separated)'
         required: false
         type: string
       theme_choice:
-        description: 'Selected LuCI theme (luci-theme-peditx or luci-theme-carbonpx)'
+        description: 'Selected LuCI theme'
         required: true
-        type: string
+        type: choice
+        options:
+          - luci-theme-peditx
+          - luci-theme-carbonpx
       lan_ip:
-        description: 'The LAN IP address'
+        description: 'Custom LAN IP address'
         required: false
         type: string
       wifi_24_enabled:
         description: 'Enable 2.4GHz WiFi'
         required: false
-        type: string
+        type: boolean
+        default: true
 
 jobs:
   build_firmware:
     name: Build Firmware
     runs-on: ubuntu-latest
     permissions:
-      contents: 'read'
-      id-token: 'write'
+      contents: read
+      id-token: write
 
     steps:
-      - name: 'Checkout Repository'
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 'Detect Package Manager & Install Dependencies'
+      - name: Detect Package Manager & Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp
+          sudo apt-get install -y wget tar make coreutils rsync openssh-client curl jq zstd unzip lftp zip
           
           VERSION_INPUT="${{ github.event.inputs.openwrt_version }}"
-          VERSION_MAJOR=$(echo "$VERSION_INPUT" | cut -d. -f1)
-          VERSION_MINOR=$(echo "$VERSION_INPUT" | cut -d. -f2)
-          
           IS_APK=false
+          
+          # Robust detection for OpenWrt 24.10+, 25.x, 26.x and Snapshots
           if [[ "$VERSION_INPUT" == *"snapshot"* || "$VERSION_INPUT" == *"master"* ]]; then
             IS_APK=true
-          elif [[ "$VERSION_MAJOR" =~ ^[0-9]+$ ]]; then
-            if [ "$VERSION_MAJOR" -gt 24 ]; then
-              IS_APK=true
-            elif [ "$VERSION_MAJOR" -eq 24 ] && [ "${VERSION_MINOR:-0}" -ge 10 ]; then
+          elif [[ "$VERSION_INPUT" =~ ^([0-9]+)\.([0-9]+) ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            if [ "$MAJOR" -gt 24 ] || { [ "$MAJOR" -eq 24 ] && [ "$MINOR" -ge 10 ]; }; then
               IS_APK=true
             fi
           fi
           
           echo "IS_APK=${IS_APK}" >> $GITHUB_ENV
-          echo "::notice::Detected Package Manager: $([ "$IS_APK" = "true" ] && echo "APK (OpenWrt 24.10+)" || echo "OPKG (OpenWrt legacy)")"
+          echo "::notice::Detected Package Manager: $([ "$IS_APK" = "true" ] && echo "APK (Modern)" || echo "OPKG (Legacy)")"
           
-          # Setup APK wrapper on host only if needed
           if [ "$IS_APK" = "true" ]; then
-            echo "Setting up APK tools wrapper for host runner..."
-            APK_URL="https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/apk-tools-static-2.14.4-r0.apk"
+            echo "Setting up APK tools wrapper..."
+            APK_URL="http://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/apk-tools-static-2.14.4-r0.apk"
             wget -qO /tmp/apk-static.apk "$APK_URL"
             tar -xf /tmp/apk-static.apk -C /tmp sbin/apk.static
             sudo mv /tmp/sbin/apk.static /usr/local/bin/apk-real
             sudo chmod +x /usr/local/bin/apk-real
-            rm -f /tmp/apk-static.apk
             
-            sudo bash -c 'cat > /usr/local/bin/apk << "EOF_WRAPPER"
+            sudo bash -c 'cat > /usr/local/bin/apk << EOF_WRAPPER
 #!/bin/sh
-exec /usr/local/bin/apk-real --no-sandbox "$@"
+exec /usr/local/bin/apk-real --no-sandbox "\$@"
 EOF_WRAPPER'
             sudo chmod +x /usr/local/bin/apk
-            /usr/local/bin/apk --version
             echo "APK_EXT=apk" >> $GITHUB_ENV
           else
-            echo "Skipping APK tools — legacy OPKG target."
             echo "APK_EXT=ipk" >> $GITHUB_ENV
           fi
 
-      - name: 'Download and Extract OpenWrt ImageBuilder'
+      - name: Download and Extract OpenWrt ImageBuilder
         id: download_ib
         run: |
-          TARGET_DIR_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}"
-          IMAGEBUILDER_FILENAME=$(curl -s "${TARGET_DIR_URL}/" | grep -o 'href="[^"]*imagebuilder[^"]*\.tar\.\(xz\|zst\)"' | head -n 1 | sed 's/href="//;s/"//')
+          TARGET_DIR_URL="http://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ github.event.inputs.device_target }}"
+          IMAGEBUILDER_FILENAME=$(curl -sL "${TARGET_DIR_URL}/" | grep -oE 'href="[^"]*imagebuilder[^"]*\.(tar\.xz|tar\.zst)"' | head -n 1 | sed 's/href="//;s/"//')
+          
           if [ -z "$IMAGEBUILDER_FILENAME" ]; then
-            echo "::error::Could not automatically find the ImageBuilder filename."
+            echo "::error::Could not find ImageBuilder at ${TARGET_DIR_URL}"
             exit 1
           fi
-          echo "IMAGEBUILDER_FILENAME=${IMAGEBUILDER_FILENAME}" >> $GITHUB_OUTPUT
-          IMAGEBUILDER_URL="${TARGET_DIR_URL}/${IMAGEBUILDER_FILENAME}"
-          wget "${IMAGEBUILDER_URL}"
-          mkdir imagebuilder
+          
+          echo "Downloading: ${IMAGEBUILDER_FILENAME}"
+          wget -q "${TARGET_DIR_URL}/${IMAGEBUILDER_FILENAME}"
+          mkdir -p imagebuilder
           tar -xf "${IMAGEBUILDER_FILENAME}" --strip-components=1 -C imagebuilder
+          echo "IMAGEBUILDER_FILENAME=${IMAGEBUILDER_FILENAME}" >> $GITHUB_OUTPUT
 
-      - name: 'Prepare ImageBuilder Environment'
+      - name: Prepare ImageBuilder Environment
         run: |
           IMAGEBUILDER_DIR="imagebuilder"
           echo "IMAGEBUILDER_DIR=${IMAGEBUILDER_DIR}" >> $GITHUB_ENV
-          TARGET_ARCH="${{ github.event.inputs.target_arch }}"
-          echo "TARGET_ARCH=${TARGET_ARCH}" >> $GITHUB_ENV
+          # CRITICAL FIX: Export TARGET_ARCH so download step can use it
+          echo "TARGET_ARCH=${{ github.event.inputs.target_arch }}" >> $GITHUB_ENV
           
-          # Disable signature check — works for both repositories.conf (OPKG) and apk.conf (APK)
-          find "${IMAGEBUILDER_DIR}" -maxdepth 3 -type f \( -name "repositories.conf" -o -name "apk.conf" \) 2>/dev/null | while read -r file; do
-            sed -i 's/^option check_signature.*/option check_signature 0/' "$file" 2>/dev/null || true
-          done
+          # Disable signature checks for both OPKG and APK
+          find "${IMAGEBUILDER_DIR}" -maxdepth 3 -type f \( -name "repositories.conf" -o -name "apk.conf" \) -exec sed -i 's/^option check_signature.*/option check_signature 0/' {} \; 2>/dev/null || true
           
-          # Download and register passwall public key for both OPKG and APK
-          wget -qO /tmp/passwall.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub \
-            || echo "::warning::Could not download passwall.pub — custom packages may not install."
-          
+          # Register Passwall key via HTTP
+          wget -qO /tmp/passwall.pub http://repository.peditxos.ir/openwrt-passwall-build/passwall.pub || true
           if [ -f /tmp/passwall.pub ]; then
-            # OPKG keys
-            find "${IMAGEBUILDER_DIR}" -type d -name "keys" 2>/dev/null | while read -r dir; do
-              cp /tmp/passwall.pub "$dir/passwall.pub"
-            done
-            
-            # APK keys
+            find "${IMAGEBUILDER_DIR}" -type d -name "keys" -exec cp /tmp/passwall.pub {}/passwall.pub \; 2>/dev/null || true
             mkdir -p "${IMAGEBUILDER_DIR}/etc/apk/keys"
             cp /tmp/passwall.pub "${IMAGEBUILDER_DIR}/etc/apk/keys/passwall.pub"
           fi
           
-          # Replace staging_dir APK binaries with our no-sandbox wrapper if APK mode
+          # Replace staging_dir apk binaries with wrapper if needed
           if [ "${{ env.IS_APK }}" = "true" ]; then
-            find "${IMAGEBUILDER_DIR}/staging_dir" -type f -name "apk" -executable 2>/dev/null | while read -r f; do
-              cp /usr/local/bin/apk "$f"
-              chmod +x "$f"
-            done
+            find "${IMAGEBUILDER_DIR}/staging_dir" -type f -name "apk" -executable -exec cp /usr/local/bin/apk {} \; 2>/dev/null || true
           fi
 
-      - name: 'Prepare Custom Files and Scripts'
+      - name: Prepare Custom Files and Scripts
         run: |
           FILES_DIR="${{ github.workspace }}/files"
           mkdir -p "${FILES_DIR}/etc"
           OPENWRT_RELEASE_BASE=$(echo "${{ github.event.inputs.openwrt_version }}" | cut -d. -f1-2)
           TARGET_ARCH_VAR="${{ github.event.inputs.target_arch }}"
-          IS_APK="${{ env.IS_APK }}"
           
-          # --- Custom package repositories for target system ---
-          if [ "$IS_APK" = "true" ]; then
-            CUSTOM_REPOS_DIR="${FILES_DIR}/etc/apk"
-            mkdir -p "${CUSTOM_REPOS_DIR}"
-            CUSTOM_REPOS_FILE="${CUSTOM_REPOS_DIR}/repositories"
-            BASE_URL="http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/%a"
-            
-            cat > "${CUSTOM_REPOS_FILE}" << EOF
+          # Custom Repositories (HTTP as preferred)
+          if [ "${{ env.IS_APK }}" = "true" ]; then
+            mkdir -p "${FILES_DIR}/etc/apk"
+            cat > "${FILES_DIR}/etc/apk/repositories" << EOF
 http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/base
 http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/luci
 http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/packages
 http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/routing
 http://repository.peditxos.ir/openwrt/releases/${{ github.event.inputs.openwrt_version }}/packages/%a/telephony
-${BASE_URL}/passwall_luci
-${BASE_URL}/passwall_packages
-${BASE_URL}/passwall2
+http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/%a/passwall_luci
+http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/%a/passwall_packages
+http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/%a/passwall2
 EOF
           else
-            CUSTOM_FEEDS_DIR="${FILES_DIR}/etc/opkg"
-            mkdir -p "${CUSTOM_FEEDS_DIR}"
-            CUSTOM_FEEDS_FILE="${CUSTOM_FEEDS_DIR}/customfeeds.conf"
+            mkdir -p "${FILES_DIR}/etc/opkg"
             BASE_URL="http://repository.peditxos.ir/openwrt-passwall-build/releases/packages-${OPENWRT_RELEASE_BASE}/${TARGET_ARCH_VAR}"
-            
-            cat > "${CUSTOM_FEEDS_FILE}" << EOF
+            cat > "${FILES_DIR}/etc/opkg/customfeeds.conf" << EOF
 # PeDitXOS Custom Feeds
 src/gz peditxos_passwall_luci ${BASE_URL}/passwall_luci
 src/gz peditxos_passwall_pkgs ${BASE_URL}/passwall_packages
@@ -190,7 +171,7 @@ src/gz peditxos_passwall2 ${BASE_URL}/passwall2
 EOF
           fi
           
-          # --- Branding ---
+          # Branding
           cat > "${FILES_DIR}/etc/os-release" << EOF
 NAME='PeDitXOS'
 VERSION='${{ github.event.inputs.openwrt_version }}'
@@ -198,39 +179,28 @@ ID='peditxos'
 ID_LIKE='openwrt'
 PRETTY_NAME='PeDitXOS (${{ github.event.inputs.openwrt_version }})'
 VERSION_ID='${{ github.event.inputs.openwrt_version }}'
-HOME_URL='https://sourceforge.net/projects/peditxos/'
-SUPPORT_URL='https://t.me/peditx'
-BUG_REPORT_URL='https://t.me/peditx'
+HOME_URL='http://sourceforge.net/projects/peditxos/'
+SUPPORT_URL='http://t.me/peditx'
+BUG_REPORT_URL='http://t.me/peditx'
 OPENWRT_BOARD='${{ github.event.inputs.device_target }}'
-OPENWRT_ARCH='${{ github.event.inputs.target_arch }}'
+OPENWRT_ARCH='${TARGET_ARCH_VAR}'
 OPENWRT_TAINTS='no-all'
 OPENWRT_RELEASE='PeDitXOS (${{ github.event.inputs.openwrt_version }})'
 EOF
 
-          # --- UCI Defaults Script ---
-          UCI_SCRIPT_DIR="${FILES_DIR}/etc/uci-defaults"
-          mkdir -p "${UCI_SCRIPT_DIR}"
-          UCI_SCRIPT_PATH="${UCI_SCRIPT_DIR}/99-peditxos-settings"
+          # UCI Defaults Script
+          mkdir -p "${FILES_DIR}/etc/uci-defaults"
+          UCI_SCRIPT="${FILES_DIR}/etc/uci-defaults/99-peditxos-settings"
+          THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
           
-          # Write static part first
-          cat > "${UCI_SCRIPT_PATH}" << 'EOF_STATIC'
+          cat > "${UCI_SCRIPT}" << 'EOF_STATIC'
 #!/bin/sh
 # Disable OPKG signature check
-if [ -f /etc/opkg.conf ]; then
-  sed -i 's/option check_signature/# option check_signature/g' /etc/opkg.conf
-fi
+[ -f /etc/opkg.conf ] && sed -i 's/option check_signature/# option check_signature/g' /etc/opkg.conf
 
-# Redirect OPKG distfeeds to PeDitXOS mirror
-if [ -f /etc/opkg/distfeeds.conf ]; then
-  sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/opkg/distfeeds.conf
-  sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/opkg/distfeeds.conf
-fi
-
-# Redirect APK repositories to PeDitXOS mirror
-if [ -f /etc/apk/repositories ]; then
-  sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
-  sed -i 's|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
-fi
+# Redirect mirrors to HTTP
+[ -f /etc/opkg/distfeeds.conf ] && sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g; s|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/opkg/distfeeds.conf
+[ -f /etc/apk/repositories ] && sed -i 's|https://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g; s|http://downloads.openwrt.org|http://repository.peditxos.ir/openwrt|g' /etc/apk/repositories
 
 # Register passwall public key
 mkdir -p /etc/apk/keys
@@ -241,9 +211,8 @@ wget -qO /tmp/passwall.pub http://repository.peditxos.ir/openwrt-passwall-build/
   || echo "Warning: Could not register passwall public key"
 EOF_STATIC
 
-          # Append UCI commands
-          THEME_NAME=$(echo "${{ github.event.inputs.theme_choice }}" | sed 's/luci-theme-//')
-          cat >> "${UCI_SCRIPT_PATH}" << EOF_UCI
+          cat >> "${UCI_SCRIPT}" << EOF_UCI
+# System Settings
 uci -q batch << UCIEOF
 set system.@system[0].hostname='PeDitXOS'
 set system.@system[0].description='PeDitXOS (Built for ${{ github.event.inputs.device_profile }})'
@@ -255,9 +224,9 @@ set luci.main.mediaurlbase='/luci-static/${THEME_NAME}'
 UCIEOF
 EOF_UCI
 
-          # LAN IP (only if provided)
+          # Conditional LAN IP
           if [ -n "${{ github.event.inputs.lan_ip }}" ]; then
-            cat >> "${UCI_SCRIPT_PATH}" << EOF_LAN
+            cat >> "${UCI_SCRIPT}" << EOF_LAN
 uci -q batch << UCIEOF
 set network.lan.ipaddr='${{ github.event.inputs.lan_ip }}'
 set dhcp.lan.start='100'
@@ -267,38 +236,32 @@ UCIEOF
 EOF_LAN
           fi
           
-          # WiFi toggle
+          # WiFi State
           if [ "${{ github.event.inputs.wifi_24_enabled }}" = "false" ]; then
-            echo "uci set wireless.radio0.disabled='1'" >> "${UCI_SCRIPT_PATH}"
+            echo "uci set wireless.radio0.disabled='1'" >> "${UCI_SCRIPT}"
           else
-            echo "uci set wireless.radio0.disabled='0'" >> "${UCI_SCRIPT_PATH}"
+            echo "uci set wireless.radio0.disabled='0'" >> "${UCI_SCRIPT}"
           fi
           
-          # Finalize UCI script
-          cat >> "${UCI_SCRIPT_PATH}" << 'EOF_FINAL'
+          cat >> "${UCI_SCRIPT}" << 'EOF_FINAL'
 uci commit
 rm -rf /tmp/luci-cache/*
-service uhttpd restart
+service uhttpd restart 2>/dev/null || /etc/init.d/uhttpd restart 2>/dev/null || true
 /sbin/reload_config
 EOF_FINAL
+          chmod +x "${UCI_SCRIPT}"
 
-          chmod +x "${UCI_SCRIPT_PATH}"
-          echo "--- Custom files prepared ---"
-
-      - name: 'Download Custom Packages'
+      - name: Download Custom Packages
         env:
           GITHUB_API_TOKEN: ${{ github.token }}
         run: |
           CUSTOM_PKG_DIR="${{ env.IMAGEBUILDER_DIR }}/packages"
           mkdir -p "${CUSTOM_PKG_DIR}"
           PKG_EXT="${{ env.APK_EXT }}"
+          TARGET_ARCH="${{ env.TARGET_ARCH }}"
           
-          # --- Generic downloader: finds latest release asset matching name pattern ---
           download_latest_pkg() {
-            local REPO="$1"
-            local SEARCH_PATTERN="$2"
-            local ARCH_PATTERN="$3"
-            
+            local REPO="$1" SEARCH_PATTERN="$2" ARCH_PATTERN="$3"
             echo "--> Fetching latest from ${REPO} matching '${SEARCH_PATTERN}'..."
             local API_URL="https://api.github.com/repos/${REPO}/releases/latest"
             local RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
@@ -338,16 +301,12 @@ EOF_FINAL
             if [ -n "$URL" ] && [ "$URL" != "null" ]; then
               wget -q "$URL" -P "${CUSTOM_PKG_DIR}" && echo "--> OK: $(basename $URL)"
             else
-              echo "::error::No package found in ${REPO} matching '${SEARCH_PATTERN}'"
-              return 1
+              echo "::warning::No package found in ${REPO} matching '${SEARCH_PATTERN}' (${ARCH_PATTERN})"
             fi
           }
           
-          # --- Passwall bundle downloader ---
           download_passwall_bundle() {
-            local PASSWALL_REPO="$1"
-            local PKG_NAME="$2"
-            
+            local PASSWALL_REPO="$1" PKG_NAME="$2"
             echo "--> Downloading passwall bundle from ${PASSWALL_REPO}..."
             local API_URL="https://api.github.com/repos/${PASSWALL_REPO}/releases/latest"
             local API_RESPONSE=$(curl -sL -H "Authorization: Bearer ${GITHUB_API_TOKEN}" "$API_URL")
@@ -357,7 +316,6 @@ EOF_FINAL
               return 1
             fi
             
-            # Try to find arch-specific zip bundle first
             local ZIP_URL=$(echo "${API_RESPONSE}" | jq -r \
               --arg ARCH "$TARGET_ARCH" --arg EXT "$PKG_EXT" \
               '.assets[] | select(.name | contains("passwall_packages") and contains($ARCH) and endswith(".zip")) | .browser_download_url' \
@@ -375,12 +333,12 @@ EOF_FINAL
           }
           
           # Download themes (no arch suffix needed)
-          download_latest_pkg "PeDitXOS/luci-theme-peditx" "luci-theme-peditx"
-          download_latest_pkg "PeDitXOS/luci-theme-carbonPX" "luci-theme-carbonpx"
+          download_latest_pkg "PeDitXOS/luci-theme-peditx" "luci-theme-peditx" ""
+          download_latest_pkg "PeDitXOS/luci-theme-carbonPX" "luci-theme-carbonpx" ""
           
           # themeswitch needs arch match (not available for x86/generic)
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
-            download_latest_pkg "PeDitXOS/luci-app-themeswitch" "luci-app-themeswitch" "${{ env.TARGET_ARCH }}"
+            download_latest_pkg "PeDitXOS/luci-app-themeswitch" "luci-app-themeswitch" "${TARGET_ARCH}"
           fi
           
           # Optional extra packages
@@ -394,7 +352,7 @@ EOF_FINAL
             fi
           done
           
-          # Index local APK packages if APK mode (CRITICAL FIX: Indexing both database types)
+          # Index local APK packages if APK mode
           if [ "${{ env.IS_APK }}" = "true" ]; then
             echo "--> Indexing local APK packages..."
             cd "${CUSTOM_PKG_DIR}"
@@ -408,7 +366,7 @@ EOF_FINAL
             cd -
           fi
 
-      - name: 'Build Firmware Image'
+      - name: Build Firmware Image
         id: build_image
         run: |
           cd "${{ env.IMAGEBUILDER_DIR }}"
@@ -487,19 +445,19 @@ EOF_FINAL
             FILES="${{ github.workspace }}/files" \
             BIN_DIR="${{ github.workspace }}/output" V=s
 
-      - name: 'Upload build logs on failure'
+      - name: Upload build logs on failure
         if: failure() && steps.build_image.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
           path: ${{ env.IMAGEBUILDER_DIR }}/logs/
 
-      - name: 'List Output Directory Contents'
+      - name: List Output Directory Contents
         if: always()
         run: |
           ls -R ${{ github.workspace }}/output 2>/dev/null || echo "Output directory empty"
 
-      - name: 'Organize, Rename, and Compress Files'
+      - name: Organize, Rename, and Compress Files
         id: organize_files
         run: |
           cd "${{ github.workspace }}/output"
@@ -537,16 +495,19 @@ EOF_FINAL
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
           echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_OUTPUT
 
-      - name: 'Upload Firmware to SourceForge'
+      - name: Upload Firmware to SourceForge
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SF_USERNAME: ${{ secrets.SF_USERNAME }}
           SF_PROJECT_NAME: ${{ secrets.SF_PROJECT_NAME }}
         run: |
+          # Security: Ensure key cleanup even on failure
+          trap 'rm -f ~/.ssh/id_rsa' EXIT
+          
           mkdir -p ~/.ssh
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
+          ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts 2>/dev/null
           
           REMOTE_BASE_DIR="/home/frs/project/${SF_PROJECT_NAME}/users"
           REMOTE_UPLOAD_DIR="${REMOTE_BASE_DIR}/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}"
@@ -560,19 +521,18 @@ EOF_FINAL
           put ${LOCAL_FILE_PATH};
           bye;
           "
-          rm -f ~/.ssh/id_rsa
 
-      - name: 'Report Result to PeDitXOS Backend'
+      - name: Report Result to PeDitXOS Backend
         if: always()
         run: |
           STATUS="failed"
           if [ "${{ job.status }}" == "success" ]; then STATUS="completed"; fi
           DOWNLOAD_URL=""
           if [ "$STATUS" == "completed" ]; then
-            DOWNLOAD_URL="https://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
+            DOWNLOAD_URL="http://sourceforge.net/projects/${{ secrets.SF_PROJECT_NAME }}/files/users/${{ github.event.inputs.user_id }}/${{ steps.organize_files.outputs.TIMESTAMP }}/${{ steps.organize_files.outputs.ARCHIVE_NAME }}"
           fi
           
-          curl -X POST "https://firmware.peditxos.ir/api/github-status" \
+          curl -X POST "http://firmware.peditxos.ir/api/github-status" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_PAT }}" \
             -d "{
