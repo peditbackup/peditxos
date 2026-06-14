@@ -319,7 +319,7 @@ jobs:
           }
 
           download_themeswitch() {
-            local REPO_PATH="PeDItXOS/luci-app-themeswitch"
+            local REPO_PATH="PeDitXOS/luci-app-themeswitch"
             echo "--> Attempting to download ${REPO_PATH} for arch ${{ env.TARGET_ARCH }}..."
             local API_URL="https://api.github.com/repos/${REPO_PATH}/releases/latest"
             local API_RESPONSE=$(curl -sL --fail "$API_URL") || { echo "::error::Failed to fetch latest release."; exit 1; }
