@@ -429,6 +429,34 @@ jobs:
           if [[ "${{ github.event.inputs.device_target }}" != "x86/generic" ]]; then
             download_themeswitch
           fi
+
+          # Rename custom APK files to match OpenWrt's expected naming convention
+          # OpenWrt APK index expects: <pkgname>-<version>.apk (no arch suffix, no 'v' prefix)
+          if [ "${{ env.IS_APK }}" = "true" ]; then
+            echo "--> Normalizing APK filenames for ImageBuilder compatibility..."
+            for apk_file in "${CUSTOM_PKG_DIR}"/*.apk; do
+              [ -f "$apk_file" ] || continue
+              filename=$(basename "$apk_file")
+              # Remove arch suffix: e.g. -aarch64_cortex-a53 or -x86_64
+              newname=$(echo "$filename" | sed \
+                -e 's/-aarch64_cortex-a53\.apk$/.apk/' \
+                -e 's/-aarch64_cortex-a72\.apk$/.apk/' \
+                -e 's/-x86_64\.apk$/.apk/' \
+                -e 's/-mipsel_24kc\.apk$/.apk/' \
+                -e 's/-mips_24kc\.apk$/.apk/' \
+                -e 's/-arm_cortex-a9_vfpv3-d16\.apk$/.apk/' \
+                -e 's/-arm_cortex-a7_neon-vfpv4\.apk$/.apk/' \
+                -e 's/_all\.apk$/.apk/' \
+              )
+              # Remove leading 'v' from version: e.g. -v1.0.5 -> -1.0.5
+              newname=$(echo "$newname" | sed 's/-v\([0-9]\)/-\1/g')
+              if [ "$filename" != "$newname" ]; then
+                mv "${CUSTOM_PKG_DIR}/${filename}" "${CUSTOM_PKG_DIR}/${newname}"
+                echo "  Renamed: ${filename} -> ${newname}"
+              fi
+            done
+            echo "--> APK filename normalization complete."
+          fi
           
           # Convert extra packages to lowercase to prevent mobile capitalization errors
           EXTRA_PKGS_LOWER=$(echo "${{ github.event.inputs.extra_packages }}" | tr '[:upper:]' '[:lower:]')
