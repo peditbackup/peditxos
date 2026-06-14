@@ -475,6 +475,19 @@ jobs:
           LOCAL_PKG_COUNT=$(find "${CUSTOM_PKG_DIR}" -maxdepth 1 \( -name "*.apk" -o -name "*.ipk" \) 2>/dev/null | wc -l)
           echo "--> Local packages ready for ImageBuilder: ${LOCAL_PKG_COUNT} files in ${CUSTOM_PKG_DIR}"
 
+      - name: 'Debug ImageBuilder APK Structure'
+        if: env.IS_APK == 'true'
+        run: |
+          echo "=== Makefile APK-related lines ==="
+          grep -n -i 'apk\|package\|repo\|local' "${{ env.IMAGEBUILDER_DIR }}/Makefile" | head -60
+          echo "=== packages/ dir contents ==="
+          ls -la "${{ env.IMAGEBUILDER_DIR }}/packages/" | head -30
+          echo "=== repositories or apk.conf files ==="
+          find "${{ env.IMAGEBUILDER_DIR }}" -name 'apk.conf' -o -name 'repositories' 2>/dev/null | while read f; do
+            echo "--- $f ---"
+            cat "$f"
+          done
+
       - name: 'Build Firmware Image'
         id: build_image
         run: |
