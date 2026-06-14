@@ -80,16 +80,10 @@ jobs:
           echo "::notice::Detected Package Manager: $([ "$IS_APK" = "true" ] && echo "APK (OpenWrt 24.10+)" || echo "OPKG (OpenWrt legacy)")"
 
           if [ "$IS_APK" = "true" ]; then
-            echo "Setting up APK tools wrapper for host runner..."
-            APK_URL="http://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/apk-tools-static-2.14.4-r0.apk"
-            wget -qO /tmp/apk-static.apk "$APK_URL"
-            tar -xf /tmp/apk-static.apk -C /tmp sbin/apk.static
-            sudo mv /tmp/sbin/apk.static /usr/local/bin/apk-real
-            sudo chmod +x /usr/local/bin/apk-real
-            rm -f /tmp/apk-static.apk
-            printf '#!/bin/sh\nexec /usr/local/bin/apk-real --no-sandbox "$@"\n' | sudo tee /usr/local/bin/apk > /dev/null
-            sudo chmod +x /usr/local/bin/apk
-            /usr/local/bin/apk --version
+            echo "Installing apk-tools from Ubuntu universe repository..."
+            sudo add-apt-repository -y universe
+            sudo apt-get install -y apk-tools
+            apk --version
             echo "APK_EXT=apk" >> $GITHUB_ENV
           else
             echo "Skipping APK tools - legacy OPKG target."
@@ -135,7 +129,7 @@ jobs:
 
           if [ "${{ env.IS_APK }}" = "true" ]; then
             find "${IMAGEBUILDER_DIR}/staging_dir" -type f -name "apk" -executable 2>/dev/null | while read -r f; do
-              cp /usr/local/bin/apk "$f"
+              cp "$(which apk)" "$f"
               chmod +x "$f"
             done
           fi
@@ -361,8 +355,8 @@ jobs:
             echo "--> Indexing local APK packages..."
             cd "${CUSTOM_PKG_DIR}"
             if ls *.apk &>/dev/null; then
-              /usr/local/bin/apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
-              /usr/local/bin/apk index --allow-untrusted -o packages.adb *.apk
+              apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
+              apk index --allow-untrusted -o packages.adb *.apk
               echo "--> APK indexes successfully created."
             else
               echo "::warning::No .apk files found to index."
